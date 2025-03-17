@@ -49,6 +49,9 @@ int main(){
         exit(1);
     }
 
+    char* message = "salut\n";
+    write(dialogSocket, message, sizeof(message));
+
     return 0;
 }
 

@@ -1,6 +1,6 @@
 # Variables
 CC = gcc
-CFLAGS = -Wall -Wextra -Werror
+CFLAGS = -Wall -Wextra
 SRC = $(wildcard *.c)
 OBJ_DIR = obj
 OBJ = $(patsubst %.c,$(OBJ_DIR)/%.o,$(SRC))

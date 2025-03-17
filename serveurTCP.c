@@ -42,6 +42,13 @@ int main(){
         exit(1);
     }
 
+    // Création socket de dialogue 
+    clilen = sizeof(cli_addr);
+    if ((dialogSocket = accept(serverSocket, (struct sockaddr *)&cli_addr, (socklen_t *)&clilen)) < 0){
+        perror("erreur création socket dialogue");
+        exit(1);
+    }
+
     return 0;
 }
 

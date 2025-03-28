@@ -1,11 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <string.h>
+#include <arpa/inet.h>
 
-#define SERV_PORT 2000
+
+// #define SERV_PORT 2000
 #define MAX_CONN 1
 
 // Socket d'ouverture en IPv4
@@ -17,7 +20,18 @@ struct sockaddr_in cli_addr;
 int clilen;
 int dialogSocket;
 
-int main(){
+int main(int argc, char* argv[]){
+    int servPort;
+    if (argc == 2){
+        servPort = atoi(argv[1]);
+    } else if (argc == 1){
+        servPort = 2000;
+    } else{
+        perror("Erreur arguments : forme attendu = ./serveurTCP <NumPort(optionnel)>");
+        exit(1);
+    }
+    printf("Num Port. socket d'ouverture : %d\n", servPort);
+
     // Création socket
     if ((serverSocket = socket(PF_INET, SOCK_STREAM, 0)) < 0){
         perror("erreur création socket");
@@ -28,7 +42,7 @@ int main(){
     memset (&serv_addr, 0, sizeof(serv_addr) );
     serv_addr.sin_family = AF_INET ;
     serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    serv_addr.sin_port = htons(SERV_PORT);
+    serv_addr.sin_port = htons(servPort);
 
     // Attachement socket
     if ((bind(serverSocket, (struct sockaddr *)&serv_addr, sizeof(serv_addr))) < 0){
@@ -41,6 +55,9 @@ int main(){
         perror("erreur ouverture de service");
         exit(1);
     }
+    char ip_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &serv_addr.sin_addr, ip_str, sizeof(ip_str));
+    printf("IP serveur : %s\n", ip_str);
 
     // Création socket de dialogue 
     clilen = sizeof(cli_addr);
@@ -49,9 +66,11 @@ int main(){
         exit(1);
     }
 
-    char* message = "salut\n";
-    write(dialogSocket, message, sizeof(message));
+    char* message = "salut!\n";
+    write(dialogSocket, message, strlen(message));
 
+    close(dialogSocket);
+    close(serverSocket);
     return 0;
 }
 

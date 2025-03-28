@@ -1,36 +1,20 @@
-# Variables
 CC = gcc
-CFLAGS = -Wall -Wextra
+CFLAGS = -Wall -Wextra -O2
 SRC = $(wildcard *.c)
-OBJ_DIR = obj
-OBJ = $(patsubst %.c,$(OBJ_DIR)/%.o,$(SRC))
-EXEC = program
+BIN_DIR = bin
+BIN = $(patsubst %.c,$(BIN_DIR)/%,$(SRC))
 
-# Création du répertoire des objets
-$(OBJ_DIR):
-	mkdir -p $(OBJ_DIR)
+all: $(BIN_DIR) $(BIN)
 
-# Règle principale
-tout: $(EXEC)
+$(BIN_DIR):
+	mkdir -p $(BIN_DIR)
 
-# Compilation de l'exécutable
-$(EXEC): $(OBJ)
-	$(CC) $(CFLAGS) $^ -o $@
+$(BIN_DIR)/%: %.c
+	$(CC) $(CFLAGS) -o $@ $<
 
-# Compilation des fichiers objets
-$(OBJ_DIR)/%.o: %.c | $(OBJ_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Exécution du programme
-run: $(EXEC)
-	./$(EXEC)
-
-# Nettoyage des fichiers objets et de l'exécutable
 clean:
-	rm -rf $(OBJ_DIR) $(EXEC)
+	rm -rf $(BIN_DIR)
 
-# Nettoyage total
-fclean: clean
+rebuild: clean all
 
-# Recompilation complète
-re: fclean tout
+.PHONY: all clean rebuild

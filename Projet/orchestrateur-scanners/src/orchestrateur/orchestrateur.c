@@ -26,6 +26,16 @@ typedef struct {
     char data[MAX_BUFFER_SIZE - 3];
 } message_t;
 
+static void signal_handler(int signum);
+static int accept_new_connection(orchestrateur_t *orch);
+static void request_agent_authentication(orchestrateur_t *orch, int agent_idx);
+static void process_authentication_response(orchestrateur_t *orch, int agent_idx, const char *data, uint16_t length);
+static void request_agent_capabilities(orchestrateur_t *orch, int agent_idx);
+static void process_capabilities_response(orchestrateur_t *orch, int agent_idx, const char *data, uint16_t length);
+static void disconnect_agent(orchestrateur_t *orch, int agent_idx, const char *reason);
+static int parse_message(const char *buffer, int bytes_read, message_t *message);
+static void process_message(orchestrateur_t *orch, int agent_idx, const message_t *message);
+
 static void signal_handler(int signum) {
     if (g_orchestrateur) {
         printf("\nSignal %d reçu. Arrêt de l'orchestrateur...\n", signum);
@@ -171,7 +181,7 @@ static void request_agent_authentication(orchestrateur_t *orch, int agent_idx) {
         return;
     }
 
-    printf("Demande d'authnetification envoyée à l'agent %d\n", agent_idx);
+    printf("Demande d'authentification envoyée à l'agent %d\n", agent_idx);
 }
 
 static void process_authentication_response(orchestrateur_t *orch, int agent_idx, const char *data, uint16_t length) {

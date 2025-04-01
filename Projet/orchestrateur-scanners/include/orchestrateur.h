@@ -8,6 +8,10 @@
 #define MAX_BUFFER_SIZE 4096
 #define DEFAULT_PORT 8080
 
+#define CAPABILITY_NMAP (1 << 0)
+#define CAPABILITY_ZAP (1 << 1)
+#define CAPABILITY_NIKTO (1 << 2)
+
 typedef enum {
     AGENT_DISCONNECTED,
     AGENT_CONNECTED,

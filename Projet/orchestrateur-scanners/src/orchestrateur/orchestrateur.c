@@ -9,6 +9,7 @@
 #include <sys/select.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <time.h>
 
 static orchestrateur_t *g_orchestrateur = NULL;
 
@@ -18,6 +19,7 @@ static orchestrateur_t *g_orchestrateur = NULL;
 #define MSG_TYPE_SCAN_REQUEST 0x04
 #define MSG_TYPE_SCAN_STATUS 0x05
 #define MSG_TYPE_SCAN_RESULT 0x06
+#define MSG_TYPE_SCAN_CANCEL 0x07
 #define MSG_TYPE_ERROR 0xFF
 
 typedef struct {
@@ -35,6 +37,11 @@ static void process_capabilities_response(orchestrateur_t *orch, int agent_idx, 
 static void disconnect_agent(orchestrateur_t *orch, int agent_idx, const char *reason);
 static int parse_message(const char *buffer, int bytes_read, message_t *message);
 static void process_message(orchestrateur_t *orch, int agent_idx, const message_t *message);
+
+static int send_scan_request(orchestrateur_t *orch, int agent_idx, const scan_t *scan);
+static void process_scan_status(orchestrateur_t *orch, int agent_idx, const char *data, uint16_t length);
+static void process_scan_result(orchestrateur_t *orch, int agent_idx, const char *data, uint16_t length);
+static int find_available_agent(orchestrateur_t *orch, uint32_t capability);
 
 static void signal_handler(int signum) {
     if (g_orchestrateur) {
@@ -273,6 +280,351 @@ static int parse_message(const char *buffer, int bytes_read, message_t *message)
     return 0;
 }
 
+int orchestrateur_create_scan(orchestrateur_t *orch, scan_type_t type, const char *options) {
+    if (!orch) return -1;
+
+    if (orch->nb_scans >= MAX_SCANS) {
+        fprintf(stderr, "Erreur: Nombre maximum de scans atteint\n");
+        return -1;
+    }
+
+    int scan_idx = -1;
+    for (int i = 0; i < MAX_SCANS; i++) {
+        if (orch->scans[i].id == 0) {
+            scan_idx = i;
+            break;
+        }
+    }
+
+    if (scan_idx == -1) {
+        fprintf(stderr, "Erreur: Incohérence dans la structure de données\n");
+        return -1;
+    }
+
+    scan_t *scan = &orch->scans[scan_idx];
+    memset(scan, 0, sizeof(scan_t));
+
+    scan->id = ++orch->next_scan_id;
+    scan->type = type;
+    scan->status = SCAN_STATUS_PENDING;
+    scan->agent_idx = -1;
+
+    if (options) {
+        strncpy(scan->options, options, MAX_OPTIONS_LENGTH - 1);
+        scan->options[MAX_OPTIONS_LENGTH - 1] = '\0';
+    }
+
+    orch->nb_scans++;
+    printf("Nouveau scan créé avec ID %u (type: %d)\n", scan->id, type);
+
+    return scan->id;
+}
+
+int orchestrateur_add_target(orchestrateur_t *orch, uint32_t scan_id, const char *target) {
+    if (!orch || !target) return -1;
+
+    scan_t *scan = orchestrateur_get_scan(orch, scan_id);
+    if (!scan) {
+        fprintf(stderr, "Erreur: Scan ID %u introuvable\n", scan_id);
+        return -1;
+    }
+
+    if (scan->status != SCAN_STATUS_PENDING) {
+        fprintf(stderr, "Erreur: Impossible d'ajouter une cible à un scan déjà démarré\n");
+        return -1;
+    }
+
+    if (scan->num_targets >= MAX_TARGETS) {
+        fprintf(stderr, "Erreur: Nombre maximum de cibles atteint pour le scan %u\n", scan_id);
+        return -1;
+    }
+
+    strncpy(scan->targets[scan->num_targets].target, target, MAX_TARGET_LENGTH - 1);
+    scan->targets[scan->num_targets].target[MAX_TARGET_LENGTH - 1] = '\0';
+    scan->num_targets++;
+
+    printf("Cible '%s' ajoutée au scan %u\n", target, scan_id);
+    return 0;
+}
+
+int orchestrateur_start_scan(orchestrateur_t *orch, uint32_t scan_id) {
+    if (!orch) return -1;
+
+    scan_t *scan = orchestrateur_get_scan(orch, scan_id);
+    if (!scan) {
+        fprintf(stderr, "Erreur: Scan ID %u introuvable\n", scan_id);
+        return -1;
+    }
+
+    if (scan->status != SCAN_STATUS_PENDING) {
+        fprintf(stderr, "Erreur: Le scan %u n'est pas en attente (status: %d)\n", scan_id, scan->status);
+        return -1;
+    }
+
+    if (scan->num_targets == 0) {
+        fprintf(stderr, "Erreur: Aucune cible définie pour le scan %u\n", scan_id);
+        return -1;
+    }
+
+    uint32_t required_capability = 0;
+    switch (scan->type) {
+        case SCAN_TYPE_NMAP:
+            required_capability = CAPABILITY_NMAP;
+            break;
+        case SCAN_TYPE_ZAP:
+            required_capability = CAPABILITY_ZAP;
+            break;
+        case SCAN_TYPE_NIKTO:
+            required_capability = CAPABILITY_NIKTO;
+            break;
+        default:
+            fprintf(stderr, "Erreur: type de scan inconnu\n");
+            return -1;
+    }
+
+    int agent_idx = find_available_agent(orch, required_capability);
+    if (agent_idx == -1) {
+        fprintf(stderr, "Erreur: Aucun agent disponible avec la capacité requise (0x%08X)\n", required_capability);
+        return -1;
+    }
+
+    scan->agent_idx = agent_idx;
+    scan->status = SCAN_STATUS_RUNNING;
+    scan->start_time = time(NULL);
+
+    if (send_scan_request(orch, agent_idx, scan) != 0) {
+        fprintf(stderr, "Erreur: Échec de l'envoi de la requête de scan à l'agent\n");
+        scan->status = SCAN_STATUS_FAILED;
+        return -1;
+    }
+
+    orch->agents[agent_idx].status = AGENT_SCANNING;
+    printf("Scan %u démarré sur l'agent %d\n", scan_id, agent_idx);
+
+    return 0;
+}
+
+int orchestrateur_cancel_scan(orchestrateur_t *orch, uint32_t scan_id) {
+    if (!orch) return -1;
+
+    scan_t *scan = orchestrateur_get_scan(orch, scan_id);
+    if (!scan) {
+        fprintf(stderr, "Erreur: Scan ID %u introuvable\n", scan_id);
+        return -1;
+    }
+
+    if (scan->status != SCAN_STATUS_RUNNING) {
+        fprintf(stderr, "Erreur: Le scan %u n'est pas en cours d'exécution\n", scan_id);
+        return -1;
+    }
+
+    int agent_idx = scan->agent_idx;
+    if (agent_idx < 0 || agent_idx >= MAX_AGENTS ||
+        orch->agents[agent_idx].status != AGENT_SCANNING) {
+        fprintf(stderr, "Erreur: Agent invalide pour le scan %u\n", scan_id);
+        return -1;
+    }
+
+    message_t cancel_msg;
+    cancel_msg.type = MSG_TYPE_SCAN_CANCEL;
+
+    uint32_t scan_id_network = htonl(scan_id);
+    memcpy(cancel_msg.data, &scan_id_network, sizeof(uint32_t));
+    cancel_msg.length = sizeof(uint32_t);
+
+    char buffer[MAX_BUFFER_SIZE];
+    buffer[0] = cancel_msg.type;
+    buffer[1] = (cancel_msg.length >> 8) & 0xFF;
+    buffer[2] = cancel_msg.length & 0xFF;
+    memcpy(buffer + 3, cancel_msg.data, cancel_msg.length);
+
+    if (send(orch->agents[agent_idx].socket_fd, buffer, 3 + cancel_msg.length, 0) < 0) {
+        perror("Erreur lors de l'envoi de la demande d'annulation");
+        return -1;
+    }
+
+    printf("Demande d'annulation envoyée pour le scan %u\n", scan_id);
+    scan->status = SCAN_STATUS_CANCELED;
+
+    return 0;
+}
+
+scan_t *orchestrateur_get_scan(orchestrateur_t *orch, uint32_t scan_id) {
+    if (!orch ||scan_id == 0) return NULL;
+
+    for (int i = 0; i < MAX_SCANS; i++) {
+        if (orch->scans[i].id == scan_id) {
+            return &orch->scans[i];
+        }
+    }
+
+    return NULL;
+}
+
+int orchestrateur_list_scans(orchestrateur_t *orch, uint32_t *scan_ids, int max_ids) {
+    if (!orch || !scan_ids || max_ids <= 0) return -1;
+
+    int count = 0;
+    for (int i = 0; i < MAX_SCANS && count < max_ids; i++) {
+        if (orch->scans[i].id != 0) {
+            scan_ids[count++] = orch->scans[i].id;
+        }
+    }
+
+    return count;
+}
+
+const char *orchestrateur_get_scan_results(orchestrateur_t *orch, uint32_t scan_id) {
+    scan_t *scan = orchestrateur_get_scan(orch, scan_id);
+    if (!scan) {
+        return NULL;
+    }
+
+    if (scan->status != SCAN_STATUS_COMPLETED) {
+        return NULL;
+    }
+
+    return scan->results;
+}
+
+static int find_available_agent(orchestrateur_t *orch, uint32_t capability) {
+    for (int i = 0; i < MAX_AGENTS; i++) {
+        if (orch->agents[i].status == AGENT_AUTHENTICATED &&
+            (orch->agents[i].capabilities & capability)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static int send_scan_request(orchestrateur_t *orch, int agent_idx, const scan_t *scan) {
+    if (!orch || agent_idx < 0 || agent_idx >= MAX_AGENTS || !scan) {
+        return -1;
+    }
+
+    message_t scan_req;
+    scan_req.type = MSG_TYPE_SCAN_REQUEST;
+
+    uint32_t scan_id_network = htonl(scan->id);
+    uint32_t scan_type_network = htonl(scan->type);
+    uint32_t num_targets_network = htonl(scan->num_targets);
+
+    int offset = 0;
+    memcpy(scan_req.data + offset, &scan_id_network, sizeof(uint32_t));
+    offset += sizeof(uint32_t);
+
+    memcpy(scan_req.data + offset, &scan_type_network, sizeof(uint32_t));
+    offset += sizeof(uint32_t);
+
+    memcpy(scan_req.data + offset, &num_targets_network, sizeof(uint32_t));
+    offset += sizeof(uint32_t);
+
+    for (int i = 0; i < scan->num_targets; i++) {
+        int target_len = strlen(scan->targets[i].target) + 1;
+        if (offset + target_len > MAX_BUFFER_SIZE - 3) {
+            fprintf(stderr, "Erreur: Message trop grand pour le buffer");
+            return -1;
+        }
+        memcpy(scan_req.data + offset, scan->targets[i].target, target_len);
+        offset += target_len;
+    }
+
+    int options_len = strlen(scan->options) + 1;
+    if (offset + options_len > MAX_BUFFER_SIZE - 3) {
+        fprintf(stderr, "Erreur: Message trop grand pour le buffer\n");
+        return -1;
+    }
+    memcpy(scan_req.data + offset, scan->options, options_len);
+    offset += options_len;
+
+    scan_req.length = offset;
+
+    char buffer[MAX_BUFFER_SIZE];
+    buffer[0] = scan_req.type;
+    buffer[1] = (scan_req.length >> 8) & 0xFF;
+    buffer[2] = scan_req.length & 0xFF;
+    memcpy(buffer + 3, scan_req.data, scan_req.length);
+
+    if (send(orch->agents[agent_idx].socket_fd, buffer, 3 + scan_req.length, 0) < 0) {
+        perror("Erreur lors de l'envoi de la requête de scan");
+        return -1;
+    }
+
+    printf("Requête de scan %u envoyée à l'agent %d\n", scan->id, agent_idx);
+    return 0;
+}
+
+static void process_scan_status(orchestrateur_t *orch, int agent_idx, const char *data, uint16_t length) {
+    if (length < sizeof(uint32_t) + sizeof(uint32_t)) {
+        fprintf(stderr, "Message de statut de scan invalide\n");
+        return;
+    }
+
+    uint32_t scan_id;
+    uint32_t progress;
+
+    memcpy(&scan_id, data, sizeof(uint32_t));
+    memcpy(&progress, data + sizeof(uint32_t), sizeof(uint32_t));
+
+    scan_id = ntohl(scan_id);
+    progress = ntohl(progress);
+
+    scan_t *scan = orchestrateur_get_scan(orch, scan_id);
+    if (!scan) {
+        fprintf(stderr, "Statut reçu pour un scan inconnu (ID: %u)\n", scan_id);
+        return;
+    }
+    
+    scan->progress = progress;
+    printf("Mise à jour du statut du scan %u: %u%%\n", scan_id, progress);
+    
+    if (progress == 100) {
+        scan->status = SCAN_STATUS_COMPLETED;
+        scan->end_time = time(NULL);
+        orch->agents[agent_idx].status = AGENT_AUTHENTICATED;
+        printf("Scan %u terminé\n", scan_id);
+    }
+}
+
+static void process_scan_result(orchestrateur_t *orch, int agent_idx, const char *data, uint16_t length) {
+    if (length < sizeof(uint32_t)) {
+        fprintf(stderr, "Message de résultat de scan invalide\n");
+        return;
+    }
+    
+    uint32_t scan_id;
+    memcpy(&scan_id, data, sizeof(uint32_t));
+    scan_id = ntohl(scan_id);
+    
+    scan_t *scan = orchestrateur_get_scan(orch, scan_id);
+    if (!scan) {
+        fprintf(stderr, "Résultat reçu pour un scan inconnu (ID: %u)\n", scan_id);
+        return;
+    }
+
+    int result_size = length - sizeof(uint32_t);
+    if (result_size > 0) {
+        if (scan->results) {
+            free(scan->results);
+        }
+        
+        scan->results = malloc(result_size + 1);
+        if (!scan->results) {
+            perror("Erreur d'allocation mémoire pour les résultats");
+            return;
+        }
+        
+        memcpy(scan->results, data + sizeof(uint32_t), result_size);
+        scan->results[result_size] = '\0';
+        scan->results_size = result_size;
+        
+        printf("Résultats reçus pour le scan %u (%d octets)\n", scan_id, result_size);
+    } else {
+        printf("Résultat vide reçu pour le scan %u\n", scan_id);
+    }
+}
+
 static void process_message(orchestrateur_t *orch, int agent_idx, const message_t *message) {
     switch (message->type) {
         case MSG_TYPE_AUTH_RESPONSE:
@@ -284,13 +636,11 @@ static void process_message(orchestrateur_t *orch, int agent_idx, const message_
             break;
         
         case MSG_TYPE_SCAN_STATUS:
-            // Implémentation à venir
-            printf("Statut du scan reçu de l'agent %d\n", agent_idx);
+            process_scan_status(orch, agent_idx, message->data, message->length);
             break;
         
         case MSG_TYPE_SCAN_RESULT:
-            // Implémentation à venir
-            printf("Résultat du scan reçu de l'agent %d\n", agent_idx);
+            process_scan_result(orch, agent_idx, message->data, message->length);
             break;
         
         case MSG_TYPE_ERROR:
@@ -302,6 +652,8 @@ static void process_message(orchestrateur_t *orch, int agent_idx, const message_
             break;
     }
 }
+
+
 
 int orchestrateur_run(orchestrateur_t *orch) {
     if (!orch || orch->server_socket < 0) return -1;

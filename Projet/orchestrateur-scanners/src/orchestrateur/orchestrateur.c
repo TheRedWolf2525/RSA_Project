@@ -587,7 +587,7 @@ static void process_scan_status(orchestrateur_t *orch, int agent_idx, const char
     }
 }
 
-static void process_scan_result(orchestrateur_t *orch, int agent_idx, const char *data, uint16_t length) {
+static void process_scan_result(orchestrateur_t *orch, int agent_idx __attribute__((unused)), const char *data, uint16_t length) {
     if (length < sizeof(uint32_t)) {
         fprintf(stderr, "Message de résultat de scan invalide\n");
         return;

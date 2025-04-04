@@ -724,3 +724,487 @@ int orchestrateur_run(orchestrateur_t *orch) {
     orchestrateur_cleanup(orch);
     return 0;
 }
+
+int vulnerability_list_init(vulnerability_list_t *list) {
+    if (!list) return -1;
+
+    list->count = 0;
+    list->capacity = 10;
+    list->vulnerabilities = malloc(list->capacity * sizeof(vulnerability_t));
+
+    if (!list->vulnerabilities) {
+        perror("Failed to allocate memory for vulnerability list");
+        return -1;
+    }
+
+    return 0;
+}
+
+int vulnerability_list_add(vulnerability_list_t *list, const vulnerability_t *vuln) {
+    if (!list || !vuln) return -1;
+
+    if (list->count >= list->capacity) {
+        int new_capacity = list->capacity * 2;
+        vulnerability_t *new_array = realloc(list->vulnerabilities,
+                                        new_capacity * sizeof(vulnerability_t));
+        
+        if (!new_array) {
+            perror("Failed to resize vulnerability list");
+            return -1;
+        }
+
+        list->vulnerabilities = new_array;
+        list->capacity = new_capacity;
+    }
+
+    memcpy(&list->vulnerabilities[list->count], vuln, sizeof(vulnerability_t));
+    list->count++;
+
+    return 0;
+}
+
+void vulnerability_list_cleanup(vulnerability_list_t *list) {
+    if (!list) return;
+
+    if (list->vulnerabilities) {
+        free(list->vulnerabilities);
+        list->vulnerabilities = NULL;
+    }
+
+    list->count = 0;
+    list->capacity = 0;
+}
+
+int parse_nmap_results(const char *results, vulnerability_list_t *vuln_list) {
+    if (!results || !vuln_list) return -1;
+
+    const char *host_start = strstr(results, "<host ");
+    while (host_start) {
+        const char *addr_start = strstr(host_start, "addr=\"");
+        char target[MAX_TARGET_LENGTH] = {0};
+
+        if (addr_start) {
+            addr_start += 6;
+            const char *addr_end = strchr(addr_start, '"');
+            if (addr_end) {
+                int len = addr_end - addr_start;
+                strncpy(target, addr_start, len < MAX_TARGET_LENGTH ? len : MAX_TARGET_LENGTH - 1);
+            }
+        }
+
+        const char *port_start = strstr(host_start, "<port ");
+        while (port_start && port_start < strstr(host_start, "</host>")) {
+            const char *script_start = strstr(port_start, "<script id=\"");
+            while (script_start && script_start < strstr(port_start, "</port>")) {
+                char script_id[64] = {0};
+                char output[2048] = {0};
+
+                const char *id_start = script_start + 12;
+                const char *id_end = strchr(id_start, '"');
+                if (id_end) {
+                    strncpy(script_id, id_start, id_end - id_start < 63 ? id_end - id_start : 63);
+                }
+
+                const char *output_start = strstr(script_start, "output=\"");
+                if (output_start) {
+                    output_start += 8;
+                    const char *output_end = strchr(output_start, '"');
+                    if (output_end) {
+                        strncpy(output, output_start, output_end - output_start < 2047 ? output_end - output_start : 2047);
+                    }
+                }
+
+                if (strstr(script_id, "vuln") || strstr(output, "VULNERABLE")) {
+                    vulnerability_t vuln;
+                    memset(&vuln, 0, sizeof(vulnerability_t));
+
+                    snprintf(vuln.id, sizeof(vuln.id), "NMAP-%.55s", script_id);
+                    snprintf(vuln.title, sizeof(vuln.title), "Nmap: %s", script_id);
+                    strncpy(vuln.description, output, sizeof(vuln.description) - 1);
+                    strncpy(vuln.target, target, sizeof(vuln.target) - 1);
+
+                    if (strstr(output, "CRITICAL") || strstr(output, "Critical"))
+                        strcpy(vuln.severity, "Critical");
+                    else if (strstr(output, "HIGH") || strstr(output, "High"))
+                        strcpy(vuln.severity, "High");
+                    else if (strstr(output, "LOW") || strstr(output, "Low"))
+                        strcpy(vuln.severity, "Low");
+                    else
+                        strcpy(vuln.severity, "Medium");
+                    
+                    vuln.source = SCAN_TYPE_NMAP;
+                    vulnerability_list_add(vuln_list, &vuln);
+                }
+
+                script_start = strstr(script_start + 1, "<script id=\"");
+            }
+
+            port_start = strstr(port_start + 1, "<port ");
+        }
+
+        host_start = strstr(host_start + 1, "<host ");
+    }
+
+    return 0;
+}
+
+int parse_zap_results(const char *results, vulnerability_list_t *vuln_list) {
+    if (!results || !vuln_list) return -1;
+    
+    const char *site_start = strstr(results, "<site ");
+    while (site_start) {
+        const char *name_start = strstr(site_start, "name=\"");
+        char target[MAX_TARGET_LENGTH] = {0};
+        
+        if (name_start) {
+            name_start += 6;
+            const char *name_end = strchr(name_start, '"');
+            if (name_end) {
+                int len = name_end - name_start;
+                strncpy(target, name_start, len < MAX_TARGET_LENGTH - 1 ? len : MAX_TARGET_LENGTH - 1);
+            }
+        }
+        
+        const char *alert_start = strstr(site_start, "<alertitem>");
+        while (alert_start && alert_start < strstr(site_start, "</site>")) {
+            vulnerability_t vuln;
+            memset(&vuln, 0, sizeof(vulnerability_t));
+            vuln.source = SCAN_TYPE_ZAP;
+            strncpy(vuln.target, target, sizeof(vuln.target) - 1);
+            
+            const char *name_start = strstr(alert_start, "<name>");
+            if (name_start) {
+                name_start += 6;
+                const char *name_end = strstr(name_start, "</name>");
+                if (name_end) {
+                    int len = name_end - name_start;
+                    strncpy(vuln.title, name_start, len < (int)sizeof(vuln.title) - 1 ? len : (int)sizeof(vuln.title) - 1);
+                }
+            }
+            
+            const char *desc_start = strstr(alert_start, "<desc>");
+            if (desc_start) {
+                desc_start += 6;
+                const char *desc_end = strstr(desc_start, "</desc>");
+                if (desc_end) {
+                    int len = desc_end - desc_start;
+                    strncpy(vuln.description, desc_start, len < (int)sizeof(vuln.description) - 1 ? len : (int)sizeof(vuln.description) - 1);
+                }
+            }
+            
+            const char *risk_start = strstr(alert_start, "<riskcode>");
+            if (risk_start) {
+                risk_start += 10;
+                const char *risk_end = strstr(risk_start, "</riskcode>");
+                if (risk_end) {
+                    int risk_code = 0;
+                    sscanf(risk_start, "%d", &risk_code);
+                    
+                    switch (risk_code) {
+                        case 0: strcpy(vuln.severity, "Info"); break;
+                        case 1: strcpy(vuln.severity, "Low"); break;
+                        case 2: strcpy(vuln.severity, "Medium"); break;
+                        case 3: strcpy(vuln.severity, "High"); break;
+                        default: strcpy(vuln.severity, "Unknown");
+                    }
+                }
+            }
+            
+            const char *pluginid_start = strstr(alert_start, "<pluginid>");
+            if (pluginid_start) {
+                pluginid_start += 10;
+                const char *pluginid_end = strstr(pluginid_start, "</pluginid>");
+                if (pluginid_end) {
+                    char pluginid[32] = {0};
+                    int len = pluginid_end - pluginid_start;
+                    strncpy(pluginid, pluginid_start, len < 31 ? len : 31);
+                    snprintf(vuln.id, sizeof(vuln.id), "ZAP-%s", pluginid);
+                }
+            }
+            
+            vulnerability_list_add(vuln_list, &vuln);
+            
+            alert_start = strstr(alert_start + 1, "<alertitem>");
+        }
+        
+        site_start = strstr(site_start + 1, "<site ");
+    }
+    
+    return 0;
+}
+
+int parse_nikto_results(const char *results, vulnerability_list_t *vuln_list) {
+    if (!results || !vuln_list) return -1;
+    
+    const char *line_start = results;
+    char target[MAX_TARGET_LENGTH] = {0};
+    
+    const char *target_line = strstr(results, "Target: ");
+    if (target_line) {
+        target_line += 8;
+        const char *target_end = strchr(target_line, '\n');
+        if (target_end) {
+            int len = target_end - target_line;
+            strncpy(target, target_line, len < MAX_TARGET_LENGTH - 1 ? len : MAX_TARGET_LENGTH - 1);
+        }
+    }
+    
+    while ((line_start = strstr(line_start, "+ "))) {
+        line_start += 2;
+        
+        const char *line_end = strchr(line_start, '\n');
+        if (!line_end) line_end = line_start + strlen(line_start);
+        
+        if (strstr(line_start, "OSVDB-") || strstr(line_start, "CVE-") || 
+            strstr(line_start, "vulnerable") || strstr(line_start, "Vulnerable")) {
+            
+            vulnerability_t vuln;
+            memset(&vuln, 0, sizeof(vulnerability_t));
+            vuln.source = SCAN_TYPE_NIKTO;
+            strncpy(vuln.target, target, sizeof(vuln.target) - 1);
+            
+            const char *id_start = strstr(line_start, "OSVDB-");
+            if (!id_start) id_start = strstr(line_start, "CVE-");
+            
+            if (id_start) {
+                const char *id_end = strchr(id_start, ':');
+                if (!id_end) id_end = strchr(id_start, ' ');
+                if (!id_end) id_end = line_end;
+                
+                int len = id_end - id_start;
+                strncpy(vuln.id, id_start, len < (int)sizeof(vuln.id) - 1 ? len : (int)sizeof(vuln.id) - 1);
+            } else {
+                snprintf(vuln.id, sizeof(vuln.id), "NIKTO-%d", vuln_list->count + 1);
+            }
+            
+            int desc_len = line_end - line_start;
+            strncpy(vuln.description, line_start, desc_len < (int)sizeof(vuln.description) - 1 ? desc_len : (int)sizeof(vuln.description) - 1);
+            
+            const char *title_end = strchr(line_start, ':');
+            if (!title_end || title_end > line_start + 50) title_end = line_start + 50;
+            
+            int title_len = title_end - line_start;
+            strncpy(vuln.title, line_start, title_len < (int)sizeof(vuln.title) - 1 ? title_len : (int)sizeof(vuln.title) - 1);
+            
+            if (strstr(line_start, "critical") || strstr(line_start, "Critical"))
+                strcpy(vuln.severity, "Critical");
+            else if (strstr(line_start, "high") || strstr(line_start, "High"))
+                strcpy(vuln.severity, "High");
+            else if (strstr(line_start, "medium") || strstr(line_start, "Medium"))
+                strcpy(vuln.severity, "Medium");
+            else if (strstr(line_start, "low") || strstr(line_start, "Low"))
+                strcpy(vuln.severity, "Low");
+            else
+                strcpy(vuln.severity, "Medium");
+            
+            vulnerability_list_add(vuln_list, &vuln);
+        }
+        
+        line_start = line_end;
+    }
+    
+    return 0;
+}
+
+int orchestrateur_aggregate_results(orchestrateur_t *orch, uint32_t *scan_ids, int scan_count, vulnerability_list_t *aggregated) {
+    if (!orch || !scan_ids || scan_count <= 0 || !aggregated) return -1;
+    
+    vulnerability_list_init(aggregated);
+    
+    for (int i = 0; i < scan_count; i++) {
+        scan_t *scan = orchestrateur_get_scan(orch, scan_ids[i]);
+        if (!scan || scan->status != SCAN_STATUS_COMPLETED || !scan->results) {
+            fprintf(stderr, "Scan %u non disponible ou incomplet\n", scan_ids[i]);
+            continue;
+        }
+        
+        printf("Analyse des résultats du scan %u (type: %d)\n", scan_ids[i], scan->type);
+        
+        switch (scan->type) {
+            case SCAN_TYPE_NMAP:
+                parse_nmap_results(scan->results, aggregated);
+                break;
+                
+            case SCAN_TYPE_ZAP:
+                parse_zap_results(scan->results, aggregated);
+                break;
+                
+            case SCAN_TYPE_NIKTO:
+                parse_nikto_results(scan->results, aggregated);
+                break;
+                
+            default:
+                fprintf(stderr, "Type de scan non supporté: %d\n", scan->type);
+                break;
+        }
+    }
+    
+    printf("Agrégation terminée: %d vulnérabilités trouvées\n", aggregated->count);
+    return aggregated->count;
+}
+
+char *orchestrateur_generate_summary(vulnerability_list_t *vuln_list) {
+    if (!vuln_list) return NULL;
+    
+    int critical_count = 0;
+    int high_count = 0;
+    int medium_count = 0;
+    int low_count = 0;
+    
+    for (int i = 0; i < vuln_list->count; i++) {
+        const char *severity = vuln_list->vulnerabilities[i].severity;
+        
+        if (strcasecmp(severity, "Critical") == 0)
+            critical_count++;
+        else if (strcasecmp(severity, "High") == 0)
+            high_count++;
+        else if (strcasecmp(severity, "Medium") == 0)
+            medium_count++;
+        else if (strcasecmp(severity, "Low") == 0)
+            low_count++;
+    }
+    
+    char *summary = malloc(8192);
+    if (!summary) {
+        perror("Erreur d'allocation mémoire pour le résumé");
+        return NULL;
+    }
+    
+    int offset = 0;
+    
+    offset += snprintf(summary + offset, 8192 - offset,
+                     "========== RÉSUMÉ DES VULNÉRABILITÉS ==========\n\n");
+    
+    offset += snprintf(summary + offset, 8192 - offset,
+                     "Nombre total de vulnérabilités: %d\n"
+                     "- Critique: %d\n"
+                     "- Haute: %d\n"
+                     "- Moyenne: %d\n"
+                     "- Basse: %d\n\n",
+                     vuln_list->count, critical_count, high_count, medium_count, low_count);
+    
+    if (critical_count > 0) {
+        offset += snprintf(summary + offset, 8192 - offset,
+                         "========== VULNÉRABILITÉS CRITIQUES ==========\n\n");
+        
+        for (int i = 0; i < vuln_list->count; i++) {
+            const vulnerability_t *vuln = &vuln_list->vulnerabilities[i];
+            if (strcasecmp(vuln->severity, "Critical") == 0) {
+                offset += snprintf(summary + offset, 8192 - offset,
+                                "ID: %s\n"
+                                "Cible: %s\n"
+                                "Titre: %s\n"
+                                "Description: %s\n"
+                                "Source: %s\n\n",
+                                vuln->id, vuln->target, vuln->title, vuln->description,
+                                (vuln->source == SCAN_TYPE_NMAP) ? "Nmap" :
+                                (vuln->source == SCAN_TYPE_ZAP) ? "OWASP ZAP" :
+                                (vuln->source == SCAN_TYPE_NIKTO) ? "Nikto" : "Inconnu");
+            }
+        }
+    }
+    
+    if (high_count > 0) {
+        offset += snprintf(summary + offset, 8192 - offset,
+                         "========== VULNÉRABILITÉS HAUTES ==========\n\n");
+        
+        for (int i = 0; i < vuln_list->count; i++) {
+            const vulnerability_t *vuln = &vuln_list->vulnerabilities[i];
+            if (strcasecmp(vuln->severity, "High") == 0) {
+                offset += snprintf(summary + offset, 8192 - offset,
+                                "ID: %s\n"
+                                "Cible: %s\n"
+                                "Titre: %s\n"
+                                "Description: %s\n"
+                                "Source: %s\n\n",
+                                vuln->id, vuln->target, vuln->title, vuln->description,
+                                (vuln->source == SCAN_TYPE_NMAP) ? "Nmap" :
+                                (vuln->source == SCAN_TYPE_ZAP) ? "OWASP ZAP" :
+                                (vuln->source == SCAN_TYPE_NIKTO) ? "Nikto" : "Inconnu");
+            }
+        }
+    }
+    
+    return summary;
+}
+
+int orchestrateur_export_results(vulnerability_list_t *vuln_list, const char *filename, const char *format) {
+    if (!vuln_list || !filename || !format) return -1;
+    
+    FILE *file = fopen(filename, "w");
+    if (!file) {
+        perror("Erreur lors de l'ouverture du fichier");
+        return -1;
+    }
+    
+    if (strcasecmp(format, "txt") == 0) {
+        // Export as text
+        fprintf(file, "========== RAPPORT DE VULNÉRABILITÉS ==========\n\n");
+        fprintf(file, "Nombre total de vulnérabilités: %d\n\n", vuln_list->count);
+        
+        for (int i = 0; i < vuln_list->count; i++) {
+            const vulnerability_t *vuln = &vuln_list->vulnerabilities[i];
+            fprintf(file, "Vulnérabilité #%d\n", i + 1);
+            fprintf(file, "ID: %s\n", vuln->id);
+            fprintf(file, "Cible: %s\n", vuln->target);
+            fprintf(file, "Titre: %s\n", vuln->title);
+            fprintf(file, "Description: %s\n", vuln->description);
+            fprintf(file, "Sévérité: %s\n", vuln->severity);
+            fprintf(file, "Source: %s\n\n", 
+                   (vuln->source == SCAN_TYPE_NMAP) ? "Nmap" :
+                   (vuln->source == SCAN_TYPE_ZAP) ? "OWASP ZAP" :
+                   (vuln->source == SCAN_TYPE_NIKTO) ? "Nikto" : "Inconnu");
+        }
+    } 
+    else if (strcasecmp(format, "csv") == 0) {
+        fprintf(file, "ID,Cible,Titre,Description,Sévérité,Source\n");
+        
+        for (int i = 0; i < vuln_list->count; i++) {
+            const vulnerability_t *vuln = &vuln_list->vulnerabilities[i];
+            
+            fprintf(file, "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
+                   vuln->id, vuln->target, vuln->title, vuln->description, vuln->severity,
+                   (vuln->source == SCAN_TYPE_NMAP) ? "Nmap" :
+                   (vuln->source == SCAN_TYPE_ZAP) ? "OWASP ZAP" :
+                   (vuln->source == SCAN_TYPE_NIKTO) ? "Nikto" : "Inconnu");
+        }
+    } 
+    else if (strcasecmp(format, "json") == 0) {
+        fprintf(file, "{\n");
+        fprintf(file, "  \"total_vulnerabilities\": %d,\n", vuln_list->count);
+        fprintf(file, "  \"vulnerabilities\": [\n");
+        
+        for (int i = 0; i < vuln_list->count; i++) {
+            const vulnerability_t *vuln = &vuln_list->vulnerabilities[i];
+            
+            fprintf(file, "    {\n");
+            fprintf(file, "      \"id\": \"%s\",\n", vuln->id);
+            fprintf(file, "      \"target\": \"%s\",\n", vuln->target);
+            fprintf(file, "      \"title\": \"%s\",\n", vuln->title);
+            fprintf(file, "      \"description\": \"%s\",\n", vuln->description);
+            fprintf(file, "      \"severity\": \"%s\",\n", vuln->severity);
+            fprintf(file, "      \"source\": \"%s\"\n", 
+                   (vuln->source == SCAN_TYPE_NMAP) ? "Nmap" :
+                   (vuln->source == SCAN_TYPE_ZAP) ? "OWASP ZAP" :
+                   (vuln->source == SCAN_TYPE_NIKTO) ? "Nikto" : "Inconnu");
+            
+            if (i < vuln_list->count - 1) {
+                fprintf(file, "    },\n");
+            } else {
+                fprintf(file, "    }\n");
+            }
+        }
+        
+        fprintf(file, "  ]\n");
+        fprintf(file, "}\n");
+    } 
+    else {
+        fclose(file);
+        fprintf(stderr, "Format d'export non supporté: %s\n", format);
+        return -1;
+    }
+    
+    fclose(file);
+    printf("Résultats exportés dans %s au format %s\n", filename, format);
+    return 0;
+}

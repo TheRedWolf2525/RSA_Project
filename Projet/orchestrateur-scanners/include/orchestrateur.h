@@ -91,4 +91,35 @@ scan_t *orchestrateur_get_scan(orchestrateur_t *orch, uint32_t scan_id);
 int orchestrateur_list_scans(orchestrateur_t *orch, uint32_t *scan_ids, int max_ids);
 const char *orchestrateur_get_scan_results(orchestrateur_t *orch, uint32_t scan_id);
 
+typedef struct {
+    char id[64];
+    char title[256];
+    char description[2048];
+    char severity[32];
+    char target[MAX_TARGET_LENGTH];
+    scan_type_t source;
+} vulnerability_t;
+
+typedef struct {
+    vulnerability_t *vulnerabilities;
+    int count;
+    int capacity;
+} vulnerability_list_t;
+
+int vulnerability_list_init(vulnerability_list_t *list);
+
+int vulnerability_list_add(vulnerability_list_t *list, const vulnerability_t *vuln);
+
+void vulnerability_list_cleanup(vulnerability_list_t *list);
+
+int parse_nmap_results(const char *results, vulnerability_list_t *vuln_list);
+int parse_zap_results(const char *results, vulnerability_list_t *vuln_list);
+int parse_nikto_results(const char *results, vulnerability_list_t *vuln_list);
+
+int orchestrateur_aggregate_results(orchestrateur_t *orch, uint32_t *scan_ids, int scan_count, vulnerability_list_t *aggregated);
+
+char *orchestrateur_generate_summary(vulnerability_list_t *vuln_list);
+
+int orchestrateur_export_results(vulnerability_list_t *vuln_list, const char *filename, const char *format);
+
 #endif /* ORCHESTRATEUR_H */

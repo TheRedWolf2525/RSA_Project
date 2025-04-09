@@ -1,5 +1,8 @@
 #include "../../include/protocol.h"
+#include "../../include/crypto.h"
 #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 #include <arpa/inet.h>
 
 int protocol_serialize_message(const message_t *message, char *buffer, size_t buffer_size) {
@@ -264,6 +267,114 @@ int protocol_create_error(uint32_t error_code, const char *error_msg, message_t 
 
     memcpy(message->data + sizeof(error_message_t), error_msg, msg_len + 1);
     message->length = sizeof(error_message_t) + msg_len + 1;
+
+    return 0;
+}
+
+int protocol_secure_serialize_message(crypto_context_t *ctx, const message_t *message,
+                                        char **buffer, size_t *buffer_size) {
+    if (!ctx || !message || !buffer || !buffer_size) return -1;
+
+    char temp_buffer[MAX_BUFFER_SIZE];
+    int serialized_size = protocol_serialize_message(message, temp_buffer, MAX_BUFFER_SIZE);
+
+    if (serialized_size < 0) return -1;
+
+    unsigned char *encrypted_data = NULL;
+    size_t encrypted_len = 0;
+
+    if (crypto_encrypt_message(ctx, (unsigned char *)temp_buffer, serialized_size,
+                               &encrypted_data, &encrypted_len) != 0) {
+        return -1;
+    }
+
+    *buffer = malloc(4 + encrypted_len);
+    if (!*buffer) {
+        free(encrypted_data);
+        return -1;
+    }
+
+    uint32_t net_len = htonl((uint32_t)encrypted_len);
+    memcpy(*buffer, &net_len, 4);
+
+    memcpy(*buffer + 4, encrypted_data, encrypted_len);
+
+    *buffer_size = 4 + encrypted_len;
+    free(encrypted_data);
+
+    return 0;
+}
+
+int protocol_secure_deserialize_message(crypto_context_t *ctx, const char *buffer,
+                                    size_t buffer_size, message_t *message) {
+    if (!ctx || !buffer || buffer_size <= 4 || !message) return -1;
+    
+    uint32_t encrypted_len;
+    memcpy(&encrypted_len, buffer, 4);
+    encrypted_len = ntohl(encrypted_len);
+
+    if (buffer_size < 4 + encrypted_len) return -1;
+
+    unsigned char *decrypted_data = NULL;
+    size_t decrypted_len = 0;
+
+    if (crypto_decrypt_message(ctx, (unsigned char *)(buffer + 4), encrypted_len,
+                               &decrypted_data, &decrypted_len) != 0) {
+        return -1;
+    }
+
+    int result = protocol_deserialize_message((char *)decrypted_data, decrypted_len, message);
+
+    free(decrypted_data);
+    return result;
+}
+
+int protocol_create_key_exchange(const unsigned char *public_key, size_t key_len, message_t *message) {
+    if (!public_key || key_len == 0 || !message) return -1;
+
+    message->type = MSG_TYPE_KEY_EXCHANGE;
+
+    if (key_len > MAX_BUFFER_SIZE - 3) return -1;
+
+    memcpy(message->data, public_key, key_len);
+    message->length = key_len;
+
+    return 0;
+}
+
+int protocol_create_session_key(const unsigned char *encrypted_key, size_t key_len, message_t *message) {
+    if (!encrypted_key || key_len == 0 || !message) return -1;
+    
+    message->type = MSG_TYPE_SESSION_KEY;
+
+    if (key_len > MAX_BUFFER_SIZE - 3) return -1;
+
+    memcpy(message->data, encrypted_key, key_len);
+    message->length = key_len;
+
+    return 0;
+}
+
+int protocol_extract_public_key(const message_t *message, unsigned char **public_key, size_t *key_len) {
+    if (!message || message->type != MSG_TYPE_KEY_EXCHANGE || !public_key || !key_len) return -1;
+
+    *key_len = message->length;
+    *public_key = malloc(*key_len);
+    if (!*public_key) return -1;
+
+    memcpy(*public_key, message->data, *key_len);
+
+    return 0;
+}
+
+int protocol_extract_session_key(const message_t *message, unsigned char **encrypted_key, size_t *key_len) {
+    if (!message ||message->type != MSG_TYPE_SESSION_KEY || !encrypted_key || !key_len) return -1;
+
+    *key_len = message->length;
+    *encrypted_key = malloc(*key_len);
+    if (!*encrypted_key) return -1;
+
+    memcpy(*encrypted_key, message->data, *key_len);
 
     return 0;
 }

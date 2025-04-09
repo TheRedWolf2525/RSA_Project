@@ -96,4 +96,19 @@ int protocol_parse_scan_request(const message_t *message, uint32_t *scan_id,
                              uint32_t *scan_type, char **targets, uint32_t max_targets,
                              uint32_t *num_targets, char *options, size_t options_size);
 
+#include "crypto.h"
+
+int protocol_secure_serialize_message(crypto_context_t *ctx, const message_t *message, 
+                                    char **buffer, size_t *buffer_size);
+int protocol_secure_deserialize_message(crypto_context_t *ctx, const char *buffer, 
+                                    size_t buffer_size, message_t *message);
+
+#define MSG_TYPE_KEY_EXCHANGE 0x09
+#define MSG_TYPE_SESSION_KEY 0x0A
+
+int protocol_create_key_exchange(const unsigned char *public_key, size_t key_len, message_t *message);
+int protocol_create_session_key(const unsigned char *encrypted_key, size_t key_len, message_t *message);
+int protocol_extract_public_key(const message_t *message, unsigned char **public_key, size_t *key_len);
+int protocol_extract_session_key(const message_t *message, unsigned char **encrypted_key, size_t *key_len);
+
  #endif /* PROTOCOL_H */

@@ -174,15 +174,21 @@ static void request_agent_authentication(orchestrateur_t *orch, int agent_idx) {
     }
 
     message_t auth_request;
-    auth_request.type = MSG_TYPE_AUTH_REQUEST;
-    auth_request.length = 0;
+    
+    if (protocol_create_auth_request(&auth_request) != 0) {
+        disconnect_agent(orch, agent_idx, "Erreur lors de la création de la demande d'authentification");
+        return;
+    }
 
-    char buffer[3];
-    buffer[0] = auth_request.type;
-    buffer[1] = (auth_request.length >> 8) & 0xFF;
-    buffer[2] = auth_request.length & 0xFF;
+    char buffer[MAX_BUFFER_SIZE];
+    int serialized_size = protocol_serialize_message(&auth_request, buffer, MAX_BUFFER_SIZE);
 
-    if (send(orch->agents[agent_idx].socket_fd, buffer, 3, 0) < 0) {
+    if (serialized_size < 0) {
+        disconnect_agent(orch, agent_idx, "Erreur lors de la sérialisation de la demande d'authentification");
+        return;
+    }
+
+    if (send(orch->agents[agent_idx].socket_fd, buffer, serialized_size, 0) < 0) {
         perror("Erreur lors de l'envoi de la demande d'authentification");
         disconnect_agent(orch, agent_idx, "Échec de la demande d'authentification");
         return;

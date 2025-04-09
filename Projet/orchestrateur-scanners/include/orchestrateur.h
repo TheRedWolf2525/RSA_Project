@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <netinet/in.h>
+#include "protocol.h"
 
 #define MAX_AGENTS 10
 #define MAX_BUFFER_SIZE 4096
@@ -12,10 +13,6 @@
 #define MAX_TARGET_LENGTH 256
 #define MAX_OPTIONS_LENGTH 1024
 
-#define CAPABILITY_NMAP (1 << 0)
-#define CAPABILITY_ZAP (1 << 1)
-#define CAPABILITY_NIKTO (1 << 2)
-
 typedef enum {
     AGENT_DISCONNECTED,
     AGENT_CONNECTED,
@@ -23,12 +20,6 @@ typedef enum {
     AGENT_SCANNING,
     AGENT_ERROR
 } agent_status_t;
-
-typedef enum {
-    SCAN_TYPE_NMAP,
-    SCAN_TYPE_ZAP,
-    SCAN_TYPE_NIKTO
-} scan_type_t;
 
 typedef enum {
     SCAN_STATUS_PENDING,

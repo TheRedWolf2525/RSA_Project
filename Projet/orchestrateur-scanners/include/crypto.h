@@ -13,13 +13,13 @@
 #       include <openssl/rand.h>
 #       include <openssl/x509.h>
 #   else
-#       define HAVE_OPENSSSL 0
+#       define HAVE_OPENSSL 0
 #   endif
 #else
 #   define HAVE_OPENSSL 0
 #endif
 
-#define KEY_LENGTH 2048
+#define KEY_LENGTH 1024
 #define AES_KEY_LENGTH 32
 #define AES_IV_LENGTH 16
 

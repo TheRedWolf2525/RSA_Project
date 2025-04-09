@@ -10,23 +10,9 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <time.h>
+#include <netinet/tcp.h>
 
 static orchestrateur_t *g_orchestrateur = NULL;
-
-#define MSG_TYPE_AUTH_REQUEST 0x01
-#define MSG_TYPE_AUTH_RESPONSE 0x02
-#define MSG_TYPE_CAPABILITIES 0x03
-#define MSG_TYPE_SCAN_REQUEST 0x04
-#define MSG_TYPE_SCAN_STATUS 0x05
-#define MSG_TYPE_SCAN_RESULT 0x06
-#define MSG_TYPE_SCAN_CANCEL 0x07
-#define MSG_TYPE_ERROR 0xFF
-
-typedef struct {
-    uint8_t type;
-    uint16_t length;
-    char data[MAX_BUFFER_SIZE - 3];
-} message_t;
 
 static void signal_handler(int signum);
 static int accept_new_connection(orchestrateur_t *orch);
@@ -43,6 +29,11 @@ static void process_scan_status(orchestrateur_t *orch, int agent_idx, const char
 static void process_scan_result(orchestrateur_t *orch, int agent_idx, const char *data, uint16_t length);
 static int find_available_agent(orchestrateur_t *orch, uint32_t capability);
 
+static void initiate_key_exchange(orchestrateur_t *orch, int agent_idx);
+static void process_key_exchange(orchestrateur_t *orch, int agent_idx, const char *data, uint16_t length);
+static void send_session_key(orchestrateur_t *orch, int agent_idx);
+static void process_session_key(orchestrateur_t *orch, int agent_idx, const char *data, uint16_t length);
+
 static void signal_handler(int signum) {
     if (g_orchestrateur) {
         printf("\nSignal %d reçu. Arrêt de l'orchestrateur...\n", signum);
@@ -54,6 +45,10 @@ int orchestrateur_init(orchestrateur_t *orch, uint16_t port) {
     if (!orch) return -1;
     
     memset(orch, 0, sizeof(orchestrateur_t));
+
+    for (int i = 0; i < MAX_AGENTS; i++) {
+        orch->agents[i].crypto_ctx = NULL;
+    }
     
     orch->server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (orch->server_socket < 0) {
@@ -151,6 +146,9 @@ static int accept_new_connection(orchestrateur_t *orch) {
     
     int flags = fcntl(client_socket, F_GETFL, 0);
     fcntl(client_socket, F_SETFL, flags | O_NONBLOCK);
+
+    int enable = 1;
+    setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable));
     
     orch->agents[agent_idx].socket_fd = client_socket;
     orch->agents[agent_idx].address = client_addr;
@@ -173,46 +171,53 @@ static void request_agent_authentication(orchestrateur_t *orch, int agent_idx) {
         return;
     }
 
-    message_t auth_request;
-    
-    if (protocol_create_auth_request(&auth_request) != 0) {
-        disconnect_agent(orch, agent_idx, "Erreur lors de la création de la demande d'authentification");
-        return;
+    if (!orch->agents[agent_idx].crypto_ctx) {
+        orch->agents[agent_idx].crypto_ctx = malloc(sizeof(crypto_context_t));
+        if (!orch->agents[agent_idx].crypto_ctx) {
+            disconnect_agent(orch, agent_idx, "failed to allocate memory for crypto context");
+            return;
+        }
+
+        if (crypto_init(orch->agents[agent_idx].crypto_ctx) != 0) {
+            free(orch->agents[agent_idx].crypto_ctx);
+            orch->agents[agent_idx].crypto_ctx = NULL;
+            disconnect_agent(orch, agent_idx, "Failed to initialize crypto context");
+            return;
+        }
     }
 
-    char buffer[MAX_BUFFER_SIZE];
-    int serialized_size = protocol_serialize_message(&auth_request, buffer, MAX_BUFFER_SIZE);
-
-    if (serialized_size < 0) {
-        disconnect_agent(orch, agent_idx, "Erreur lors de la sérialisation de la demande d'authentification");
-        return;
-    }
-
-    if (send(orch->agents[agent_idx].socket_fd, buffer, serialized_size, 0) < 0) {
-        perror("Erreur lors de l'envoi de la demande d'authentification");
-        disconnect_agent(orch, agent_idx, "Échec de la demande d'authentification");
-        return;
-    }
-
-    printf("Demande d'authentification envoyée à l'agent %d\n", agent_idx);
+    initiate_key_exchange(orch, agent_idx);
 }
 
 static void process_authentication_response(orchestrateur_t *orch, int agent_idx, const char *data, uint16_t length) {
+    crypto_context_t *ctx = orch->agents[agent_idx].crypto_ctx;
+
+    if (!ctx || !ctx->has_session_key) {
+        disconnect_agent(orch, agent_idx, "Attempted authentication without secure channel");
+        return;
+    }
+
     if (length < 1) {
-        disconnect_agent(orch, agent_idx, "Réponse d'authentification invalide");
+        disconnect_agent(orch, agent_idx, "Invalid authentication response");
         return;
     }
 
     if (length > sizeof(orch->agents[agent_idx].hostname) - 1) {
-        disconnect_agent(orch, agent_idx, "Nom d'hôte trop long");
+        disconnect_agent(orch, agent_idx, "Hostname too long");
         return;
     }
 
     memcpy(orch->agents[agent_idx].hostname, data, length);
     orch->agents[agent_idx].hostname[length] = '\0';
 
+    const char *auth_token = "SECRET_TOKEN_123";
+    if (strstr(data, auth_token) == NULL) {
+        disconnect_agent(orch, agent_idx, "Invalid authentication token");
+        return;
+    }
+
     orch->agents[agent_idx].status = AGENT_AUTHENTICATED;
-    printf("Agent %d authentifié: %s\n", agent_idx, orch->agents[agent_idx].hostname);
+    printf("Agent %d authenticated: %s\n", agent_idx, orch->agents[agent_idx].hostname);
 
     request_agent_capabilities(orch, agent_idx);
 }
@@ -267,6 +272,12 @@ static void disconnect_agent(orchestrateur_t *orch, int agent_idx, const char *r
 
     printf("Déconnexion de l'agent %d: %s\n", agent_idx, reason);
 
+    if (orch->agents[agent_idx].crypto_ctx) {
+        crypto_cleanup(orch->agents[agent_idx].crypto_ctx);
+        free(orch->agents[agent_idx].crypto_ctx);
+        orch->agents[agent_idx].crypto_ctx = NULL;
+    }
+
     close(orch->agents[agent_idx].socket_fd);
     orch->agents[agent_idx].socket_fd = -1;
     orch->agents[agent_idx].status = AGENT_DISCONNECTED;
@@ -283,6 +294,10 @@ static int parse_message(const char *buffer, int bytes_read, message_t *message)
     if (bytes_read - 3 < message->length) return -1;
 
     memcpy(message->data, buffer + 3, message->length);
+
+    printf("Debug parse_message: bytes_read=%d, msg_type=%02X, msg_length=%u\n", 
+        bytes_read, buffer[0], ((uint16_t)buffer[1] << 8) | buffer[2]);
+
     return 0;
 }
 
@@ -312,7 +327,7 @@ int orchestrateur_create_scan(orchestrateur_t *orch, scan_type_t type, const cha
 
     scan->id = ++orch->next_scan_id;
     scan->type = type;
-    scan->status = SCAN_STATUS_PENDING;
+    scan->status = SCAN_STATE_PENDING;
     scan->agent_idx = -1;
 
     if (options) {
@@ -335,7 +350,7 @@ int orchestrateur_add_target(orchestrateur_t *orch, uint32_t scan_id, const char
         return -1;
     }
 
-    if (scan->status != SCAN_STATUS_PENDING) {
+    if (scan->status != SCAN_STATE_PENDING) {
         fprintf(stderr, "Erreur: Impossible d'ajouter une cible à un scan déjà démarré\n");
         return -1;
     }
@@ -362,7 +377,7 @@ int orchestrateur_start_scan(orchestrateur_t *orch, uint32_t scan_id) {
         return -1;
     }
 
-    if (scan->status != SCAN_STATUS_PENDING) {
+    if (scan->status != SCAN_STATE_PENDING) {
         fprintf(stderr, "Erreur: Le scan %u n'est pas en attente (status: %d)\n", scan_id, scan->status);
         return -1;
     }
@@ -395,12 +410,12 @@ int orchestrateur_start_scan(orchestrateur_t *orch, uint32_t scan_id) {
     }
 
     scan->agent_idx = agent_idx;
-    scan->status = SCAN_STATUS_RUNNING;
+    scan->status = SCAN_STATE_RUNNING;
     scan->start_time = time(NULL);
 
     if (send_scan_request(orch, agent_idx, scan) != 0) {
         fprintf(stderr, "Erreur: Échec de l'envoi de la requête de scan à l'agent\n");
-        scan->status = SCAN_STATUS_FAILED;
+        scan->status = SCAN_STATE_FAILED;
         return -1;
     }
 
@@ -419,7 +434,7 @@ int orchestrateur_cancel_scan(orchestrateur_t *orch, uint32_t scan_id) {
         return -1;
     }
 
-    if (scan->status != SCAN_STATUS_RUNNING) {
+    if (scan->status != SCAN_STATE_RUNNING) {
         fprintf(stderr, "Erreur: Le scan %u n'est pas en cours d'exécution\n", scan_id);
         return -1;
     }
@@ -450,7 +465,7 @@ int orchestrateur_cancel_scan(orchestrateur_t *orch, uint32_t scan_id) {
     }
 
     printf("Demande d'annulation envoyée pour le scan %u\n", scan_id);
-    scan->status = SCAN_STATUS_CANCELED;
+    scan->status = SCAN_STATE_CANCELED;
 
     return 0;
 }
@@ -486,7 +501,7 @@ const char *orchestrateur_get_scan_results(orchestrateur_t *orch, uint32_t scan_
         return NULL;
     }
 
-    if (scan->status != SCAN_STATUS_COMPLETED) {
+    if (scan->status != SCAN_STATE_COMPLETED) {
         return NULL;
     }
 
@@ -586,7 +601,7 @@ static void process_scan_status(orchestrateur_t *orch, int agent_idx, const char
     printf("Mise à jour du statut du scan %u: %u%%\n", scan_id, progress);
     
     if (progress == 100) {
-        scan->status = SCAN_STATUS_COMPLETED;
+        scan->status = SCAN_STATE_COMPLETED;
         scan->end_time = time(NULL);
         orch->agents[agent_idx].status = AGENT_AUTHENTICATED;
         printf("Scan %u terminé\n", scan_id);
@@ -653,6 +668,14 @@ static void process_message(orchestrateur_t *orch, int agent_idx, const message_
             printf("Erreur reçue de l'agent %d: %.*s\n", agent_idx, message->length, message->data);
             break;
         
+        case MSG_TYPE_KEY_EXCHANGE:
+            process_key_exchange(orch, agent_idx, message->data, message->length);
+            break;
+        
+        case MSG_TYPE_SESSION_KEY:
+            process_session_key(orch, agent_idx, message->data, message->length);
+            break;
+        
         default:
             printf("Message inconnu (type: 0x%02X) reçu de l'agent %d\n", message->type, agent_idx);
             break;
@@ -703,6 +726,8 @@ int orchestrateur_run(orchestrateur_t *orch) {
                 char buffer[MAX_BUFFER_SIZE];
                 int bytes_read = recv(orch->agents[i].socket_fd, buffer, MAX_BUFFER_SIZE - 1, 0);
                 
+                printf("Received %d bytes from agent %d\n", bytes_read, i);
+
                 if (bytes_read <= 0) {
                     if (bytes_read == 0) {
                         printf("Agent %d déconnecté\n", i);
@@ -1019,7 +1044,7 @@ int orchestrateur_aggregate_results(orchestrateur_t *orch, uint32_t *scan_ids, i
     
     for (int i = 0; i < scan_count; i++) {
         scan_t *scan = orchestrateur_get_scan(orch, scan_ids[i]);
-        if (!scan || scan->status != SCAN_STATUS_COMPLETED || !scan->results) {
+        if (!scan || scan->status != SCAN_STATE_COMPLETED || !scan->results) {
             fprintf(stderr, "Scan %u non disponible ou incomplet\n", scan_ids[i]);
             continue;
         }
@@ -1213,4 +1238,168 @@ int orchestrateur_export_results(vulnerability_list_t *vuln_list, const char *fi
     fclose(file);
     printf("Résultats exportés dans %s au format %s\n", filename, format);
     return 0;
+}
+
+static void initiate_key_exchange(orchestrateur_t *orch, int agent_idx) {
+    crypto_context_t *ctx = orch->agents[agent_idx].crypto_ctx;
+
+    if (crypto_generate_keys(ctx) != 0) {
+        disconnect_agent(orch, agent_idx, "Failed to generate key pair");
+        return;
+    }
+
+    unsigned char *public_key = NULL;
+    size_t key_len = 0;
+
+    if (crypto_export_public_key(ctx, &public_key, &key_len) != 0) {
+        disconnect_agent(orch, agent_idx, "Failed to export public key");
+        return;
+    }
+
+    message_t key_msg;
+    if (protocol_create_key_exchange(public_key, key_len, &key_msg) != 0) {
+        free(public_key);
+        disconnect_agent(orch, agent_idx, "Failed to create key exchange message");
+        return;
+    }
+
+    char buffer[MAX_BUFFER_SIZE];
+    memset(buffer, 0, MAX_BUFFER_SIZE);
+    int serialized_size = protocol_serialize_message(&key_msg, buffer, MAX_BUFFER_SIZE);
+
+    printf("Envoi message: type=%02X, longueur=%u, taille sérialisée=%d\n",
+        key_msg.type, key_msg.length, serialized_size);
+    printf("Premiers octets: %02X %02X %02X\n",
+        (unsigned char)buffer[0],
+        (unsigned char)buffer[1],
+        (unsigned char)buffer[2]);
+
+    if (serialized_size < 0) {
+        free(public_key);
+        disconnect_agent(orch, agent_idx, "failed to serialize key exchange message");
+        return;
+    }
+
+    if (send(orch->agents[agent_idx].socket_fd, buffer, serialized_size, 0) < 0) {
+        perror("Error sending key exchange message");
+        free(public_key);
+        disconnect_agent(orch, agent_idx, "Failed to send key exchange message");
+        return;
+    }
+
+    free(public_key);
+    printf("Key exchange initiated with agent %d\n", agent_idx);
+}
+
+static void process_key_exchange(orchestrateur_t *orch, int agent_idx, const char *data, uint16_t length) {
+    printf("Traitement de la clé publique de l'agent %d (%u octets)\n", agent_idx, length);
+
+    if (length < 10) {
+        disconnect_agent(orch, agent_idx, "Clé publique trop courte");
+        return;
+    }
+    
+    crypto_context_t *ctx = orch->agents[agent_idx].crypto_ctx;
+
+    unsigned char *peer_public_key = NULL;
+    size_t key_len = 0;
+
+    message_t key_msg;
+    key_msg.type = MSG_TYPE_KEY_EXCHANGE;
+    key_msg.length = length;
+    memcpy(key_msg.data, data, length);
+
+    if (protocol_extract_public_key(&key_msg, &peer_public_key, &key_len) != 0) {
+        disconnect_agent(orch, agent_idx, "failed to extract public key");
+        return;
+    }
+
+    if (crypto_import_public_key(ctx, peer_public_key, key_len) != 0) {
+        free(peer_public_key);
+        disconnect_agent(orch, agent_idx, "Failed to import public key");
+        return;
+    }
+
+    free(peer_public_key);
+
+    if (crypto_generate_session_key(ctx) != 0) {
+        disconnect_agent(orch, agent_idx, "Failed to generate session key");
+        return;
+    }
+
+    send_session_key(orch, agent_idx);
+}
+
+static void send_session_key(orchestrateur_t *orch, int agent_idx) {
+    crypto_context_t *ctx = orch->agents[agent_idx].crypto_ctx;
+
+    unsigned char *encrypted_key = NULL;
+    size_t encrypted_len = 0;
+
+    if (crypto_encrypt_session_key(ctx, &encrypted_key, &encrypted_len) != 0) {
+        disconnect_agent(orch, agent_idx, "Failed to encrypt session key");
+        return;
+    }
+
+    message_t key_msg;
+    if (protocol_create_session_key(encrypted_key, encrypted_len, &key_msg) != 0) {
+        free(encrypted_key);
+        disconnect_agent(orch, agent_idx, "Failed to create session key message");
+        return;
+    }
+
+    char buffer[MAX_BUFFER_SIZE];
+    int serialized_size = protocol_serialize_message(&key_msg, buffer, MAX_BUFFER_SIZE);
+
+    if (serialized_size < 0) {
+        free(encrypted_key);
+        disconnect_agent(orch, agent_idx, "Failed to serialize session key message");
+        return;
+    }
+
+    if (send(orch->agents[agent_idx].socket_fd, buffer, serialized_size, 0) < 0) {
+        perror("Error sending session key message");
+        free(encrypted_key);
+        disconnect_agent(orch, agent_idx, "Failed to send session key message");
+        return;
+    }
+
+    usleep(100000);
+
+    free(encrypted_key);
+    printf("Session key sent to agent %d\n", agent_idx);
+
+    message_t auth_request;
+    if (protocol_create_auth_request(&auth_request) != 0) {
+        disconnect_agent(orch, agent_idx, "Failed to create auth request");
+        return;
+    }
+
+    char *secure_buffer = NULL;
+    size_t secure_buffer_size = 0;
+
+    if (protocol_secure_serialize_message(ctx, &auth_request, &secure_buffer, &secure_buffer_size) != 0) {
+        disconnect_agent(orch, agent_idx, "Failed to securely serialize auth request");
+        return;
+    }
+    printf("Sending secure auth request: total size %zu bytes\n", secure_buffer_size);
+
+    if (send(orch->agents[agent_idx].socket_fd, secure_buffer, secure_buffer_size, 0) < 0) {
+        perror("Error sending secure auth request");
+        free(secure_buffer);
+        disconnect_agent(orch, agent_idx, "Failed to send secure auth request");
+        return;
+    }
+
+    usleep(10000);
+
+    free(secure_buffer);
+    printf("Authentication request sent to agent %d over secure channel\n", agent_idx);
+}
+
+static void process_session_key(orchestrateur_t *orch, int agent_idx, const char *data, uint16_t length) {
+    (void)orch;
+    (void)agent_idx;
+    (void)data;
+    (void)length; 
 }

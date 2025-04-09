@@ -22,12 +22,12 @@ typedef enum {
 } agent_status_t;
 
 typedef enum {
-    SCAN_STATUS_PENDING,
-    SCAN_STATUS_RUNNING,
-    SCAN_STATUS_COMPLETED,
-    SCAN_STATUS_FAILED,
-    SCAN_STATUS_CANCELED
-} scan_status_t;
+    SCAN_STATE_PENDING,
+    SCAN_STATE_RUNNING,
+    SCAN_STATE_COMPLETED,
+    SCAN_STATE_FAILED,
+    SCAN_STATE_CANCELED
+} scan_state_t;
 
 typedef struct {
     char target[MAX_TARGET_LENGTH];
@@ -37,7 +37,7 @@ typedef struct {
     uint32_t id;
     scan_type_t type;
     int agent_idx;
-    scan_status_t status;
+    scan_state_t status;
     uint32_t progress;
     char options[MAX_OPTIONS_LENGTH];
     scan_target_t targets[MAX_TARGETS];
@@ -54,6 +54,7 @@ typedef struct {
     agent_status_t status;
     char hostname[256];
     uint32_t capabilities;
+    crypto_context_t *crypto_ctx;
 } agent_t;
 
 typedef struct {

@@ -41,23 +41,26 @@ void orchestrator_run()
     static int commands_sent = 0;
     static int command_index = 0;
     int agent_count = get_connected_client_count();
-    
+
     if (agent_count > 0 && commands_sent < 3)
     {
-        const char* commands[] = {
+        const char *commands[] = {
             "SCAN nmap localhost -p1-1000",
             "SCAN nikto localhost",
-            "SCAN zap localhost"
-        };
-        
-        if (command_index < 3) {
+            "SCAN zap localhost"};
+
+        if (command_index < 3)
+        {
             printf("Sending scan command to agent (%d/3)...\n", command_index + 1);
-            
-            if (send_command(0, commands[command_index]) == 0) {
+
+            if (send_command(0, commands[command_index]) == 0)
+            {
                 printf("Command sent successfully\n");
                 command_index++;
                 commands_sent++;
-            } else {
+            }
+            else
+            {
                 printf("Failed to send command\n");
             }
         }
@@ -73,7 +76,7 @@ void orchestrator_run()
             if (is_agent_connected(i))
             {
                 memset(buffer, 0, BUFFER_SIZE);
-                
+
                 int result = receive_results(i, buffer);
                 if (result > 0)
                 {
@@ -83,29 +86,42 @@ void orchestrator_run()
                         printf("\n========== SCAN RESULTS ==========\n");
                         printf("Received results from agent %d:\n%s\n", i, msg->content);
                         printf("==================================\n\n");
-                        
+
                         char scanner_type[256] = {0};
-                        if (strstr(msg->content, "Nmap scan report") != NULL) {
+                        if (strstr(msg->content, "Nmap scan report") != NULL)
+                        {
                             strcpy(scanner_type, "nmap");
-                        } else if (strstr(msg->content, "Nikto") != NULL) {
+                        }
+                        else if (strstr(msg->content, "Nikto") != NULL)
+                        {
                             strcpy(scanner_type, "nikto");
-                        } else if (strstr(msg->content, "ZAP") != NULL) {
+                        }
+                        else if (strstr(msg->content, "ZAP") != NULL ||
+                                 strstr(msg->content, "OWASP ZAP") != NULL ||
+                                 strstr(msg->content, "zap-cli") != NULL ||
+                                 strstr(msg->content, "zap-baseline") != NULL ||
+                                 strstr(msg->content, "zap2docker") != NULL ||
+                                 strstr(msg->content, "owasp/zap") != NULL)
+                        {
                             strcpy(scanner_type, "zap");
-                        } else {
+                        }
+                        else
+                        {
+                            fprintf(stderr, "Warning: Unknown scanner type for content: %.100s...\n", msg->content);
                             strcpy(scanner_type, "unknown");
                         }
-                        
+
                         aggregate_results(scanner_type, msg->content);
-                        
+
                         get_aggregated_summary();
-                        
+
                         save_results_to_file();
                     }
                 }
             }
         }
     }
-    
+
     usleep(100000);
 }
 

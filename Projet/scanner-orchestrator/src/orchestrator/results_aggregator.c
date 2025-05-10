@@ -59,13 +59,39 @@ void save_results_to_file() {
     fprintf(file, "      SECURITY SCAN RESULTS SUMMARY      \n");
     fprintf(file, "==========================================\n\n");
     
+    printf("Saving %d scan results to file\n", result_count);
     for (int i = 0; i < result_count; i++) {
+        printf("Writing result %d: %s (length: %lu)\n", i, 
+               results[i].scanner_name, 
+               results[i].result ? strlen(results[i].result) : 0);
+        
         fprintf(file, "Scanner: %s\n", results[i].scanner_name);
         fprintf(file, "-------------------------------------------\n");
-        fprintf(file, "%s\n\n", results[i].result);
+        fprintf(file, "%s\n\n", results[i].result ? results[i].result : "No results available");
         fprintf(file, "-------------------------------------------\n\n");
     }
     
     fclose(file);
     printf("Results saved to scan_results.txt\n");
+}
+
+void add_scan_result(const char *scanner_name, const char *result) {
+    if (result_count >= MAX_RESULTS) {
+        fprintf(stderr, "Error: Maximum number of results reached\n");
+        return;
+    }
+    
+    printf("Adding result for scanner: %s\n", scanner_name);
+    
+    strncpy(results[result_count].scanner_name, scanner_name, sizeof(results[result_count].scanner_name) - 1);
+    results[result_count].scanner_name[sizeof(results[result_count].scanner_name) - 1] = '\0';
+    
+    results[result_count].result = strdup(result);
+    if (results[result_count].result == NULL) {
+        fprintf(stderr, "Error: Failed to allocate memory for result\n");
+        return;
+    }
+    
+    result_count++;
+    printf("Result added successfully. Total results: %d\n", result_count);
 }

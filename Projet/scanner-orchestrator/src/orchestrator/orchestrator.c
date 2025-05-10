@@ -38,17 +38,28 @@ void orchestrator_run()
 
     accept_connections();
 
-    static int command_sent = 0;
+    static int commands_sent = 0;
+    static int command_index = 0;
     int agent_count = get_connected_client_count();
     
-    if (agent_count > 0 && !command_sent)
+    if (agent_count > 0 && commands_sent < 3)
     {
-        printf("Sending scan command to agent...\n");
-        if (send_command(0, "SCAN nmap localhost -p80") == 0) {
-            printf("Command sent successfully\n");
-            command_sent = 1;
-        } else {
-            printf("Failed to send command\n");
+        const char* commands[] = {
+            "SCAN nmap localhost -p1-1000",
+            "SCAN nikto localhost",
+            "SCAN zap localhost"
+        };
+        
+        if (command_index < 3) {
+            printf("Sending scan command to agent (%d/3)...\n", command_index + 1);
+            
+            if (send_command(0, commands[command_index]) == 0) {
+                printf("Command sent successfully\n");
+                command_index++;
+                commands_sent++;
+            } else {
+                printf("Failed to send command\n");
+            }
         }
     }
 
@@ -73,9 +84,22 @@ void orchestrator_run()
                         printf("Received results from agent %d:\n%s\n", i, msg->content);
                         printf("==================================\n\n");
                         
-                        aggregate_results("nmap", msg->content);
+                        char scanner_type[256] = {0};
+                        if (strstr(msg->content, "Nmap scan report") != NULL) {
+                            strcpy(scanner_type, "nmap");
+                        } else if (strstr(msg->content, "Nikto") != NULL) {
+                            strcpy(scanner_type, "nikto");
+                        } else if (strstr(msg->content, "ZAP") != NULL) {
+                            strcpy(scanner_type, "zap");
+                        } else {
+                            strcpy(scanner_type, "unknown");
+                        }
+                        
+                        aggregate_results(scanner_type, msg->content);
                         
                         get_aggregated_summary();
+                        
+                        save_results_to_file();
                     }
                 }
             }

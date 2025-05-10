@@ -14,6 +14,8 @@ void aggregate_results(const char *scanner_name, const char *results);
 
 void get_aggregated_summary();
 
+void save_results_to_file();
+
 void free_results_aggregator();
 
 #endif // RESULTS_AGGREGATOR_H

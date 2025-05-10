@@ -47,3 +47,25 @@ void free_results_aggregator() {
     }
     result_count = 0;
 }
+
+void save_results_to_file() {
+    FILE *file = fopen("scan_results.txt", "w");
+    if (file == NULL) {
+        fprintf(stderr, "Error: Could not open file for writing results\n");
+        return;
+    }
+    
+    fprintf(file, "==========================================\n");
+    fprintf(file, "      SECURITY SCAN RESULTS SUMMARY      \n");
+    fprintf(file, "==========================================\n\n");
+    
+    for (int i = 0; i < result_count; i++) {
+        fprintf(file, "Scanner: %s\n", results[i].scanner_name);
+        fprintf(file, "-------------------------------------------\n");
+        fprintf(file, "%s\n\n", results[i].result);
+        fprintf(file, "-------------------------------------------\n\n");
+    }
+    
+    fclose(file);
+    printf("Results saved to scan_results.txt\n");
+}

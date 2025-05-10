@@ -1,0 +1,191 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include "communication.h"
+#include "../common/crypto.h"
+#include "../common/messages.h"
+#include "../common/protocol.h"
+
+#define BUFFER_SIZE 1024
+#define KEY_SIZE 32
+
+static int server_fd = -1;
+static int *client_sockets = NULL;
+static int max_clients = 10;
+static int client_count = 0;
+static unsigned char encryption_key[KEY_SIZE];
+
+int init_communication(const char *address, int port) {
+    struct sockaddr_in server_addr;
+    int opt = 1;
+
+    generate_random_key(encryption_key, KEY_SIZE);
+    
+    client_sockets = malloc(max_clients * sizeof(int));
+    if (!client_sockets) {
+        perror("Failed to allocate client sockets array");
+        return -1;
+    }
+    
+    for (int i = 0; i < max_clients; i++) {
+        client_sockets[i] = -1;
+    }
+    
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        perror("Socket creation failed");
+        free(client_sockets);
+        return -1;
+    }
+    
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        perror("Setsockopt failed");
+        close(server_fd);
+        free(client_sockets);
+        return -1;
+    }
+    
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+    
+    if (inet_pton(AF_INET, address, &server_addr.sin_addr) <= 0) {
+        perror("Invalid address");
+        close(server_fd);
+        free(client_sockets);
+        return -1;
+    }
+
+    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Bind failed");
+        close(server_fd);
+        free(client_sockets);
+        return -1;
+    }
+    
+    if (listen(server_fd, 3) < 0) {
+        perror("Listen failed");
+        close(server_fd);
+        free(client_sockets);
+        return -1;
+    }
+    
+    printf("Orchestrator listening on %s:%d\n", address, port);
+    return 0;
+}
+
+void accept_connections() {
+    struct sockaddr_in client_addr;
+    int addrlen = sizeof(client_addr);
+    int new_socket;
+    
+    new_socket = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&addrlen);
+    if (new_socket >= 0) {
+        for (int i = 0; i < max_clients; i++) {
+            if (client_sockets[i] < 0) {
+                client_sockets[i] = new_socket;
+                client_count++;
+                
+                char ip[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &client_addr.sin_addr, ip, INET_ADDRSTRLEN);
+                printf("New agent connected: %s\n", ip);
+                break;
+            }
+        }
+    }
+}
+
+int start_communication() {
+    printf("Communication started, waiting for agent connections...\n");
+    return 0;
+}
+
+int send_command(int agent_id, const char *command) {
+    if (agent_id < 0 || agent_id >= max_clients || client_sockets[agent_id] < 0) {
+        fprintf(stderr, "Invalid agent ID\n");
+        return -1;
+    }
+    
+    char buffer[BUFFER_SIZE];
+    char encrypted_buffer[BUFFER_SIZE];
+    Message msg;
+    
+    msg.type = MSG_TYPE_COMMAND;
+    msg.length = strlen(command);
+    strncpy(msg.content, command, MAX_MESSAGE_LENGTH - 1);
+    msg.content[MAX_MESSAGE_LENGTH - 1] = '\0';
+    
+    size_t msg_size = sizeof(MessageType) + sizeof(uint32_t) + msg.length;
+    memcpy(buffer, &msg.type, sizeof(MessageType));
+    memcpy(buffer + sizeof(MessageType), &msg.length, sizeof(uint32_t));
+    memcpy(buffer + sizeof(MessageType) + sizeof(uint32_t), msg.content, msg.length);
+    
+    encrypt_data((const unsigned char*)buffer, (unsigned char*)encrypted_buffer, msg_size, encryption_key);
+    
+    if (send(client_sockets[agent_id], encrypted_buffer, msg_size, 0) < 0) {
+        perror("Failed to send command");
+        return -1;
+    }
+    
+    return 0;
+}
+
+int receive_results(int agent_id, char *buffer, size_t buffer_size) {
+    if (agent_id < 0 || agent_id >= max_clients || client_sockets[agent_id] < 0) {
+        fprintf(stderr, "Invalid agent ID\n");
+        return -1;
+    }
+    
+    char encrypted_buffer[BUFFER_SIZE];
+    char decrypted_buffer[BUFFER_SIZE];
+    ssize_t bytes_received;
+    
+    bytes_received = recv(client_sockets[agent_id], encrypted_buffer, BUFFER_SIZE, MSG_DONTWAIT);
+    if (bytes_received <= 0) {
+        return -1;
+    }
+    
+    decrypt_data((const unsigned char*)encrypted_buffer, (unsigned char*)decrypted_buffer, bytes_received, encryption_key);
+    
+    if (buffer_size >= bytes_received) {
+        memcpy(buffer, decrypted_buffer, bytes_received);
+        return 0;
+    } else {
+        fprintf(stderr, "Buffer too small for received data\n");
+        return -1;
+    }
+}
+
+void close_communication() {
+    for (int i = 0; i < max_clients; i++) {
+        if (client_sockets[i] >= 0) {
+            close(client_sockets[i]);
+            client_sockets[i] = -1;
+        }
+    }
+    
+    if (server_fd >= 0) {
+        close(server_fd);
+        server_fd = -1;
+    }
+    
+    free(client_sockets);
+    client_sockets = NULL;
+    client_count = 0;
+    
+    printf("Communication closed\n");
+}
+
+int get_connected_client_count() {
+    return client_count;
+}
+
+int is_agent_connected(int agent_id) {
+    if (agent_id < 0 || agent_id >= max_clients) {
+        return 0;
+    }
+    return client_sockets[agent_id] >= 0;
+}

@@ -1,0 +1,38 @@
+{
+  "scanners": {
+    "nmap": {
+      "enabled": true,
+      "default_options": "-sS -sV -O",
+      "targets": []
+    },
+    "owasp_zap": {
+      "enabled": true,
+      "default_options": {
+        "scan_type": "active",
+        "context": "default"
+      },
+      "targets": []
+    },
+    "nikto": {
+      "enabled": true,
+      "default_options": "-host",
+      "targets": []
+    }
+  },
+  "communication": {
+    "protocol": "TLS",
+    "port": 8080,
+    "timeout": 30
+  },
+  "results": {
+    "output_format": "json",
+    "aggregation": {
+      "enabled": true,
+      "method": "merge"
+    }
+  },
+  "logging": {
+    "level": "info",
+    "file": "logs/orchestrator.log"
+  }
+}

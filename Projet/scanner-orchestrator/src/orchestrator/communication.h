@@ -19,4 +19,6 @@ int get_connected_client_count();
 
 int is_agent_connected(int agent_id);
 
+int get_max_clients();
+
 #endif // COMMUNICATION_H

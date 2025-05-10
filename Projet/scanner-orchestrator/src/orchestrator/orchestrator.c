@@ -47,7 +47,7 @@ void orchestrator_run()
         const char *commands[] = {
             "SCAN nmap localhost -p1-1000",
             "SCAN nikto localhost",
-            "SCAN ~/Téléchargements/tmp/ZAP_2.16.1/zap.sh -cmd -quickurl localhost"};
+            "SCAN zap -cmd -quickurl localhost"};
 
         if (command_index < 3)
         {

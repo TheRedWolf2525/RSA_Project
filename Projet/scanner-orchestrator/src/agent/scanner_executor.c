@@ -5,47 +5,76 @@
 #include "scanner_executor.h"
 
 #define BUFFER_SIZE 4096
-#define OUTPUT_FILE "/tmp/scanner_output.txt"
 
 int execute_nmap(const char *target, const char *options) {
+    char output_file[] = "/tmp/nmap_output.XXXXXX";
+    int fd = mkstemp(output_file);
+    if (fd == -1) {
+        perror("mkstemp for nmap failed");
+        return -1;
+    }
+    close(fd);
+
     char command[BUFFER_SIZE];
-    
     if (options && strlen(options) > 0) {
-        snprintf(command, sizeof(command), "nmap %s %s > %s 2>&1", options, target, OUTPUT_FILE);
+        snprintf(command, sizeof(command), "nmap %s %s > %s 2>&1", options, target, output_file);
     } else {
-        snprintf(command, sizeof(command), "nmap -sV %s > %s 2>&1", target, OUTPUT_FILE);
+        snprintf(command, sizeof(command), "nmap -sV %s > %s 2>&1", target, output_file);
     }
     
     printf("Executing: %s\n", command);
-    return system(command);
+    int result = system(command);
+
+    unlink(output_file);
+    return result;
 }
 
 int execute_owasp_zap(const char *target, const char *options) {
+    char output_file[] = "/tmp/zap_output.XXXXXX";
+    int fd = mkstemp(output_file);
+    if (fd == -1) {
+        perror("mkstemp for owasp_zap failed");
+        return -1;
+    }
+    close(fd);
+
     char command[BUFFER_SIZE];
-    
     if (options && strlen(options) > 0) {
         snprintf(command, sizeof(command), "zap-cli quick-scan %s --url %s > %s 2>&1", 
-                options, target, OUTPUT_FILE);
+                options, target, output_file);
     } else {
         snprintf(command, sizeof(command), "zap-cli quick-scan --self-contained --url %s > %s 2>&1", 
-                target, OUTPUT_FILE);
+                target, output_file);
     }
     
     printf("Executing: %s\n", command);
-    return system(command);
+    int result = system(command);
+
+    unlink(output_file);
+    return result;
 }
 
 int execute_nikto(const char *target, const char *options) {
+    char output_file[] = "/tmp/nikto_output.XXXXXX";
+    int fd = mkstemp(output_file);
+    if (fd == -1) {
+        perror("mkstemp for nikto failed");
+        return -1;
+    }
+    close(fd);
+
     char command[BUFFER_SIZE];
-    
     if (options && strlen(options) > 0) {
-        snprintf(command, sizeof(command), "nikto %s -h %s > %s 2>&1", options, target, OUTPUT_FILE);
+        snprintf(command, sizeof(command), "nikto %s -h %s > %s 2>&1", options, target, output_file);
     } else {
-        snprintf(command, sizeof(command), "nikto -h %s > %s 2>&1", target, OUTPUT_FILE);
+        snprintf(command, sizeof(command), "nikto -h %s > %s 2>&1", target, output_file);
     }
     
     printf("Executing: %s\n", command);
-    return system(command);
+    int result = system(command);
+
+    unlink(output_file);
+    return result;
 }
 
 int execute_scanner(const char *scanner_type, const char *target, const char *options) {

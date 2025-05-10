@@ -1,0 +1,35 @@
+==========================================
+      SECURITY SCAN RESULTS SUMMARY      
+==========================================
+
+Scanner: nmap
+-------------------------------------------
+Starting Nmap 7.94SVN ( https://nmap.org ) at 2025-05-10 20:07 CEST
+Nmap scan report for localhost (127.0.0.1)
+Host is up (0.000091s latency).
+All 1000 scanned ports on localhost (127.0.0.1) are in ignored states.
+Not shown: 1000 closed tcp ports (conn-refused)
+
+Nmap done: 1 IP address (1 host up) scanned in 0.04 seconds
+
+
+-------------------------------------------
+
+Scanner: nikto
+-------------------------------------------
+- Nikto v2.1.5
+---------------------------------------------------------------------------
++ No web server found on localhost:80
+---------------------------------------------------------------------------
++ 0 host(s) tested
+
+
+-------------------------------------------
+
+Scanner: unknown
+-------------------------------------------
+sh: 1: zap: not found
+
+
+-------------------------------------------
+

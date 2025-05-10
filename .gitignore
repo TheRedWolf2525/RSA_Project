@@ -4,3 +4,4 @@ CM-Socket.pdf
 /bin
 /Projet/orchestrateur-scanners/build
 .vscode
+*.o

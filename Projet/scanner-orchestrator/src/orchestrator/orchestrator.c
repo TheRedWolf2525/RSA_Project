@@ -9,6 +9,8 @@
 #include "config.h"
 #include "../common/messages.h"
 
+#define BUFFER_SIZE 4096
+
 static Config config;
 static int running = 0;
 
@@ -36,35 +38,51 @@ void orchestrator_run()
 
     accept_connections();
 
-    int agent_count = get_agent_count();
+    static int command_sent = 0;
+    int agent_count = get_connected_client_count();
+    
+    if (agent_count > 0 && !command_sent)
+    {
+        printf("Sending scan command to agent...\n");
+        if (send_command(0, "SCAN nmap localhost -p80") == 0) {
+            printf("Command sent successfully\n");
+            command_sent = 1;
+        } else {
+            printf("Failed to send command\n");
+        }
+    }
+
     if (agent_count > 0)
     {
-        char buffer[1024];
+        char buffer[BUFFER_SIZE];
+        int max_clients_value = get_max_clients();
 
-        for (int i = 0; i < agent_count; i++)
+        for (int i = 0; i < max_clients_value; i++)
         {
             if (is_agent_connected(i))
             {
-                if (receive_results(i, buffer) == 0)
+                memset(buffer, 0, BUFFER_SIZE);
+                
+                int result = receive_results(i, buffer);
+                if (result > 0)
                 {
                     Message *msg = (Message *)buffer;
                     if (msg->type == MSG_TYPE_RESULT)
                     {
-                        aggregate_results(msg->content, "Scan results");
+                        printf("\n========== SCAN RESULTS ==========\n");
+                        printf("Received results from agent %d:\n%s\n", i, msg->content);
+                        printf("==================================\n\n");
+                        
+                        aggregate_results("nmap", msg->content);
+                        
+                        get_aggregated_summary();
                     }
                 }
             }
         }
     }
-
+    
     usleep(100000);
-    static int command_sent = 0;
-    if (agent_count > 0 && !command_sent)
-    {
-        printf("Sending scan command to agent...\n");
-        send_command(0, "SCAN nmap localhost -p80");
-        command_sent = 1;
-    }
 }
 
 void orchestrator_cleanup()

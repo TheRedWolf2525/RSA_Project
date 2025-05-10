@@ -4,6 +4,9 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <fcntl.h>
 #include "communication.h"
 #include "../common/crypto.h"
 #include "../common/messages.h"
@@ -72,6 +75,20 @@ int init_communication(const char *address, int port) {
         free(client_sockets);
         return -1;
     }
+
+    int flags = fcntl(server_fd, F_GETFL, 0);
+    if (flags == -1) {
+        perror("fcntl(F_GETFL) failed");
+        close(server_fd);
+        free(client_sockets);
+        return -1;
+    }
+    if (fcntl(server_fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        perror("fcntl(F_SETFL, O_NONBLOCK) failed");
+        close(server_fd);
+        free(client_sockets);
+        return -1;
+    }
     
     printf("Orchestrator listening on %s:%d\n", address, port);
     return 0;
@@ -79,10 +96,10 @@ int init_communication(const char *address, int port) {
 
 void accept_connections() {
     struct sockaddr_in client_addr;
-    int addrlen = sizeof(client_addr);
+    socklen_t addrlen = sizeof(client_addr);
     int new_socket;
     
-    new_socket = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&addrlen);
+    new_socket = accept(server_fd, (struct sockaddr *)&client_addr, &addrlen);
     if (new_socket >= 0) {
         for (int i = 0; i < max_clients; i++) {
             if (client_sockets[i] < 0) {
@@ -92,8 +109,22 @@ void accept_connections() {
                 char ip[INET_ADDRSTRLEN];
                 inet_ntop(AF_INET, &client_addr.sin_addr, ip, INET_ADDRSTRLEN);
                 printf("New agent connected: %s\n", ip);
+                int client_flags = fcntl(new_socket, F_GETFL, 0);
+                if (client_flags != -1) {
+                    fcntl(new_socket, F_SETFL, client_flags | O_NONBLOCK);
+                }
                 break;
             }
+        }
+        if (new_socket >= 0 && client_sockets[max_clients-1] != new_socket && client_count >= max_clients) {
+             printf("Max clients reached, connection from %s rejected.\n", inet_ntoa(client_addr.sin_addr));
+             close(new_socket);
+        }
+    } else {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return;
+        } else {
+            perror("accept failed");
         }
     }
 }
@@ -158,18 +189,39 @@ int receive_results(int agent_id, char* buffer) {
     
     bytes_received = recv(client_sockets[agent_id], encrypted_buffer, BUFFER_SIZE, MSG_DONTWAIT);
     if (bytes_received <= 0) {
+        if (bytes_received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return 0;
+        }
+        
+        if (bytes_received == 0) {
+            printf("Connection closed by agent %d\n", agent_id);
+            client_sockets[agent_id] = -1;
+        } else {
+            perror("Failed to receive message");
+        }
         return -1;
     }
     
-    decrypt_data((const unsigned char*)encrypted_buffer, (unsigned char*)decrypted_buffer, bytes_received, encryption_key);
+    printf("Received %zd bytes from agent %d\n", bytes_received, agent_id);
     
-    if (!deserialize_message(decrypted_buffer, bytes_received, &msg)) {
+    int decrypted_size = decrypt_data((const unsigned char*)encrypted_buffer, (unsigned char*)decrypted_buffer, bytes_received, encryption_key);
+    if (decrypted_size <= 0) {
+        fprintf(stderr, "Failed to decrypt message\n");
+        return -1;
+    }
+    
+    printf("Decrypted %d bytes from agent %d\n", decrypted_size, agent_id);
+    
+    if (!deserialize_message(decrypted_buffer, decrypted_size, &msg)) {
         fprintf(stderr, "Failed to deserialize message\n");
         return -1;
     }
     
+    printf("Deserialized message of type %d with content length %d\n", msg.type, msg.length);
+    
     memcpy(buffer, &msg, sizeof(Message));
-    return 0;
+    
+    return sizeof(Message);
 }
 
 void close_communication() {
@@ -201,4 +253,8 @@ int is_agent_connected(int agent_id) {
         return 0;
     }
     return client_sockets[agent_id] >= 0;
+}
+
+int get_max_clients() {
+    return max_clients;
 }

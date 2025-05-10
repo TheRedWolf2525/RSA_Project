@@ -19,16 +19,32 @@ void initialize_agent() {
 
 void send_results(const char* results) {
     Message msg;
+    
+    memset(&msg, 0, sizeof(Message));
+    
     msg.type = MSG_TYPE_RESULT;
     msg.length = strlen(results);
-    strncpy(msg.content, results, MAX_MESSAGE_LENGTH - 1);
-    msg.content[MAX_MESSAGE_LENGTH - 1] = '\0';
+    if (msg.length >= MAX_MESSAGE_LENGTH) {
+        printf("Warning: Results truncated from %u to %d bytes\n", 
+               (unsigned int)msg.length, MAX_MESSAGE_LENGTH - 1);
+        msg.length = MAX_MESSAGE_LENGTH - 1;
+    }
     
-    send_message(&msg);
+    strncpy(msg.content, results, msg.length);
+    msg.content[msg.length] = '\0';
+    
+    printf("Sending results to orchestrator (length: %u)\n", msg.length);
+    
+    if (send_message(&msg) == 0) {
+        printf("Results sent successfully\n");
+    } else {
+        fprintf(stderr, "Failed to send results\n");
+    }
 }
 
 void handle_command(const char *command) {
     printf("Received command: '%s'\n", command);
+    fflush(stdout);
     
     if (strncmp(command, "SCAN", 4) == 0) {
         char scanner_type[256] = {0};
@@ -39,28 +55,31 @@ void handle_command(const char *command) {
         
         if (items < 2) {
             printf("Invalid scan command format. Expected: SCAN <scanner_type> <target> [options]\n");
+            fflush(stdout);
             send_results("Error: Invalid command format");
             return;
         }
         
-        printf("Parsed command - Scanner: '%s', Target: '%s', Options: '%s'\n", 
+        printf("Executing scanner: '%s' on target: '%s' with options: '%s'\n", 
                scanner_type, target, options);
-        
-        char result_buffer[BUFFER_SIZE] = {0};
+        fflush(stdout);
         
         int status = execute_scanner(scanner_type, target, items >= 3 ? options : NULL);
         
-        if (status == 0) {
-            snprintf(result_buffer, BUFFER_SIZE, "Scan completed successfully for %s on target %s", 
-                    scanner_type, target);
-        } else {
+        printf("Scanner execution completed with status: %d\n", status);
+        fflush(stdout);
+        
+        if (status != 0) {
+            char result_buffer[BUFFER_SIZE] = {0};
             snprintf(result_buffer, BUFFER_SIZE, "Scan failed for %s on target %s with status %d", 
                     scanner_type, target, status);
+            send_results(result_buffer);
         }
-        
-        send_results(result_buffer);
+        printf("Results handling completed\n");
+        fflush(stdout);
     } else {
         printf("Unknown command: '%s'\n", command);
+        fflush(stdout);
         send_results("Error: Unknown command");
     }
 }
@@ -69,13 +88,24 @@ void start_command_listener() {
     Message msg;
     
     while (1) {
-        if (receive_message(&msg) == 0) {
+        memset(&msg, 0, sizeof(Message));
+
+        printf("Waiting for command...\n");
+        fflush(stdout);
+        
+        int result = receive_message(&msg);
+        
+        if (result == 0) {
             if (msg.type == MSG_TYPE_COMMAND) {
                 handle_command(msg.content);
+            } else {
+                fprintf(stderr, "Agent: Received unexpected message type: %d\n", msg.type);
+                fflush(stderr);
             }
-        } else {
-            printf("Error receiving message\n");
-            sleep(1);
+        } else if (result < 0) {
+            printf("Connection to orchestrator lost or error during receive.\n");
+            fflush(stdout); 
+            break;
         }
     }
 }

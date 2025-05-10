@@ -58,13 +58,28 @@ int send_message(const Message *msg) {
         return -1;
     }
     
-    encrypt_data((const unsigned char*)buffer, (unsigned char*)encrypted_buffer, msg_size, encryption_key);
+    printf("Serialized message of type %d with content length %u\n", 
+           msg->type, msg->length);
     
-    if (send(socket_fd, encrypted_buffer, msg_size, 0) < 0) {
+    int encrypted_size = encrypt_data((const unsigned char*)buffer, 
+                                      (unsigned char*)encrypted_buffer, 
+                                      msg_size, 
+                                      encryption_key);
+    
+    if (encrypted_size <= 0) {
+        fprintf(stderr, "Failed to encrypt message\n");
+        return -1;
+    }
+    
+    printf("Encrypted message to %d bytes\n", encrypted_size);
+    
+    ssize_t sent = send(socket_fd, encrypted_buffer, encrypted_size, 0);
+    if (sent < 0) {
         perror("Failed to send message");
         return -1;
     }
     
+    printf("Sent %zd bytes to orchestrator\n", sent);
     return 0;
 }
 

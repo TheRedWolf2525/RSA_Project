@@ -4,104 +4,97 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/aes.h>
+#include <openssl/err.h>
 #include "crypto.h"
 
 #define IV_SIZE 16
+static unsigned char iv[IV_SIZE] = { 0 };
 
-void generate_random_key(unsigned char *key, size_t length) {
+void generate_random_key(unsigned char *key, size_t length)
+{
     static int initialized = 0;
-    if (!initialized) {
+    if (!initialized)
+    {
         RAND_poll();
         initialized = 1;
     }
-    
-    if (RAND_bytes(key, length) != 1) {
+
+    if (RAND_bytes(key, length) != 1)
+    {
         fprintf(stderr, "Error generating random key\n");
-        for (size_t i = 0; i < length; i++) {
+        for (size_t i = 0; i < length; i++)
+        {
             key[i] = rand() % 256;
         }
     }
 }
 
-void encrypt_data(const unsigned char *input, unsigned char *output, size_t length, const unsigned char *key) {
+int encrypt_data(const unsigned char *plaintext, unsigned char *ciphertext, size_t plaintext_len, const unsigned char *key) {
     EVP_CIPHER_CTX *ctx;
     int len;
     int ciphertext_len;
-    unsigned char iv[IV_SIZE];
-    
-    generate_random_key(iv, IV_SIZE);
-    
-    ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) {
+
+    if (!(ctx = EVP_CIPHER_CTX_new())) {
         fprintf(stderr, "Error creating cipher context\n");
-        return;
+        return 0;
     }
-    
-    if (EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv) != 1) {
+
+    if (1 != EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv)) {
         fprintf(stderr, "Error initializing encryption\n");
         EVP_CIPHER_CTX_free(ctx);
-        return;
+        return 0;
     }
-    
-    memcpy(output, iv, IV_SIZE);
-    
-    if (EVP_EncryptUpdate(ctx, output + IV_SIZE, &len, input, length) != 1) {
-        fprintf(stderr, "Error encrypting data\n");
+
+    if (1 != EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len)) {
+        fprintf(stderr, "Error encrypting update\n");
         EVP_CIPHER_CTX_free(ctx);
-        return;
+        return 0;
     }
     ciphertext_len = len;
-    
-    if (EVP_EncryptFinal_ex(ctx, output + IV_SIZE + len, &len) != 1) {
-        fprintf(stderr, "Error finalizing encryption\n");
+
+    if (1 != EVP_EncryptFinal_ex(ctx, ciphertext + len, &len)) {
+        fprintf(stderr, "Error finalizing encryption: %s\n", ERR_error_string(ERR_get_error(), NULL));
         EVP_CIPHER_CTX_free(ctx);
-        return;
+        return 0;
     }
     ciphertext_len += len;
-    
+
     EVP_CIPHER_CTX_free(ctx);
+    return ciphertext_len;
 }
 
-void decrypt_data(const unsigned char *input, unsigned char *output, size_t length, const unsigned char *key) {
+int decrypt_data(const unsigned char *encrypted, unsigned char *decrypted, size_t encrypted_len, const unsigned char *key) {
     EVP_CIPHER_CTX *ctx;
     int len;
     int plaintext_len;
-    unsigned char iv[IV_SIZE];
-    
-    if (length < IV_SIZE + AES_BLOCK_SIZE) {
-        fprintf(stderr, "Input data too short for decryption\n");
-        return;
-    }
-    
-    memcpy(iv, input, IV_SIZE);
-    
-    ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) {
+
+    if (!(ctx = EVP_CIPHER_CTX_new())) {
         fprintf(stderr, "Error creating cipher context\n");
-        return;
+        return 0;
     }
-    
-    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv) != 1) {
+
+    if (1 != EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv)) {
         fprintf(stderr, "Error initializing decryption\n");
         EVP_CIPHER_CTX_free(ctx);
-        return;
+        return 0;
     }
-    
-    if (EVP_DecryptUpdate(ctx, output, &len, input + IV_SIZE, length - IV_SIZE) != 1) {
-        fprintf(stderr, "Error decrypting data\n");
+
+    if (1 != EVP_DecryptUpdate(ctx, decrypted, &len, encrypted, encrypted_len)) {
+        fprintf(stderr, "Error decrypting update\n");
         EVP_CIPHER_CTX_free(ctx);
-        return;
+        return 0;
     }
     plaintext_len = len;
-    
-    if (EVP_DecryptFinal_ex(ctx, output + len, &len) != 1) {
-        fprintf(stderr, "Error finalizing decryption\n");
+
+    char err_buf[256];
+    if (1 != EVP_DecryptFinal_ex(ctx, decrypted + len, &len)) {
+        fprintf(stderr, "Error finalizing decryption: %s\n", 
+                ERR_error_string(ERR_get_error(), err_buf));
         EVP_CIPHER_CTX_free(ctx);
-        return;
+        return 0;
     }
     plaintext_len += len;
-    
-    output[plaintext_len] = '\0';
-    
+
     EVP_CIPHER_CTX_free(ctx);
+    return plaintext_len;
 }

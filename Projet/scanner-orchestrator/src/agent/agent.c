@@ -28,16 +28,27 @@ void send_results(const char* results) {
 }
 
 void handle_command(const char *command) {
+    printf("Received command: '%s'\n", command);
+    
     if (strncmp(command, "SCAN", 4) == 0) {
-        char target[256];
-        char scanner_type[256];
-        char options[256] = "";
+        char scanner_type[256] = {0};
+        char target[256] = {0};
+        char options[256] = {0};
         
-        sscanf(command + 5, "%s %s %s", scanner_type, target, options);
+        int items = sscanf(command + 5, "%255s %255s %255s", scanner_type, target, options);
+        
+        if (items < 2) {
+            printf("Invalid scan command format. Expected: SCAN <scanner_type> <target> [options]\n");
+            send_results("Error: Invalid command format");
+            return;
+        }
+        
+        printf("Parsed command - Scanner: '%s', Target: '%s', Options: '%s'\n", 
+               scanner_type, target, options);
         
         char result_buffer[BUFFER_SIZE] = {0};
         
-        int status = execute_scanner(scanner_type, target, options);
+        int status = execute_scanner(scanner_type, target, items >= 3 ? options : NULL);
         
         if (status == 0) {
             snprintf(result_buffer, BUFFER_SIZE, "Scan completed successfully for %s on target %s", 
@@ -49,12 +60,12 @@ void handle_command(const char *command) {
         
         send_results(result_buffer);
     } else {
-        printf("Unknown command: %s\n", command);
+        printf("Unknown command: '%s'\n", command);
+        send_results("Error: Unknown command");
     }
 }
 
 void start_command_listener() {
-    char buffer[BUFFER_SIZE];
     Message msg;
     
     while (1) {

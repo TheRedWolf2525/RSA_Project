@@ -7,6 +7,7 @@
 #include "communication.h"
 #include "../common/crypto.h"
 #include "../common/messages.h"
+#include "../common/protocol.h"
 
 #define BUFFER_SIZE 4096
 #define KEY_SIZE 32
@@ -14,48 +15,11 @@
 static int socket_fd = -1;
 static unsigned char encryption_key[KEY_SIZE];
 
-int serialize_message(const Message *msg, char *buffer, size_t buffer_size) {
-    if (!msg || !buffer || buffer_size < sizeof(MessageType) + sizeof(uint32_t) + msg->length) {
-        return 0;
-    }
-
-    memcpy(buffer, &msg->type, sizeof(MessageType));
-    
-    memcpy(buffer + sizeof(MessageType), &msg->length, sizeof(uint32_t));
-    
-    memcpy(buffer + sizeof(MessageType) + sizeof(uint32_t), msg->content, msg->length);
-    
-    return sizeof(MessageType) + sizeof(uint32_t) + msg->length;
-}
-
-int deserialize_message(const char *buffer, size_t buffer_size, Message *msg) {
-    if (!buffer || !msg || buffer_size < sizeof(MessageType) + sizeof(uint32_t)) {
-        return 0;
-    }
-    
-    memcpy(&msg->type, buffer, sizeof(MessageType));
-    
-    memcpy(&msg->length, buffer + sizeof(MessageType), sizeof(uint32_t));
-    
-    if (buffer_size < sizeof(MessageType) + sizeof(uint32_t) + msg->length) {
-        return 0;
-    }
-    
-    memcpy(msg->content, buffer + sizeof(MessageType) + sizeof(uint32_t), msg->length);
-    
-    if (msg->length < MAX_MESSAGE_LENGTH) {
-        msg->content[msg->length] = '\0';
-    } else {
-        msg->content[MAX_MESSAGE_LENGTH - 1] = '\0';
-    }
-    
-    return 1;
-}
 
 int initialize_communication(const char *ip, int port) {
     struct sockaddr_in server_addr;
 
-    generate_random_key(encryption_key, KEY_SIZE);
+    memset(encryption_key, 0x42, KEY_SIZE);
     
     socket_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_fd < 0) {
@@ -119,12 +83,23 @@ int receive_message(Message *msg) {
         return -1;
     }
     
-    decrypt_data((const unsigned char*)buffer, (unsigned char*)decrypted_buffer, bytes_received, encryption_key);
+    printf("Received %zd bytes\n", bytes_received);
     
-    if (!deserialize_message(decrypted_buffer, bytes_received, msg)) {
+    int decrypted_size = decrypt_data((const unsigned char*)buffer, (unsigned char*)decrypted_buffer, bytes_received, encryption_key);
+    if (decrypted_size <= 0) {
+        fprintf(stderr, "Failed to decrypt message\n");
+        return -1;
+    }
+    
+    printf("Decrypted %d bytes\n", decrypted_size);
+    
+    if (!deserialize_message(decrypted_buffer, decrypted_size, msg)) {
         fprintf(stderr, "Failed to deserialize message\n");
         return -1;
     }
+    
+    printf("Deserialized message of type %d with content '%s' (length: %u)\n", 
+           msg->type, msg->content, msg->length);
     
     return 0;
 }

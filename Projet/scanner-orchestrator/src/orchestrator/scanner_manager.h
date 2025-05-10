@@ -5,7 +5,7 @@
 
 void init_scanner_manager();
 
-int configure_scanner(const char* scanner_name, const ScannerConfig* config);
+int configure_scanner(const char* scanner_name);
 
 int execute_scan(const char* scanner_name, const char* target);
 

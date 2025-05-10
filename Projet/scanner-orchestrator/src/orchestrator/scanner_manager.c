@@ -24,7 +24,7 @@ void init_scanner_manager() {
     }
 }
 
-int configure_scanner(const char* scanner_name, const ScannerConfig* config) {
+int configure_scanner(const char* scanner_name) {
     for (int i = 0; i < MAX_SCANNERS; i++) {
         if (strcmp(scanners[i].name, scanner_name) == 0) {
             printf("Configured scanner %s\n", scanner_name);

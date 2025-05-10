@@ -11,7 +11,7 @@ void accept_connections();
 
 int send_command(int agent_id, const char* command);
 
-int receive_results(int agent_id, char* buffer, size_t buffer_size);
+int receive_results(int agent_id, char* buffer);
 
 void close_communication();
 

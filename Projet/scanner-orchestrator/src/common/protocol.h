@@ -2,6 +2,7 @@
 #define PROTOCOL_H
 
 #include <stdint.h>
+#include "messages.h"
 
 #define MAX_MESSAGE_SIZE 1024
 
@@ -23,5 +24,8 @@ typedef struct {
     uint32_t status;
     char results[MAX_MESSAGE_SIZE];
 } ResultMessage;
+
+size_t serialize_message(const Message *msg, char *buffer, size_t buffer_size);
+int deserialize_message(const char *buffer, size_t buffer_size, Message *msg);
 
 #endif // PROTOCOL_H

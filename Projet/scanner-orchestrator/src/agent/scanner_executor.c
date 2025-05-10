@@ -49,24 +49,17 @@ int execute_nikto(const char *target, const char *options) {
 }
 
 int execute_scanner(const char *scanner_type, const char *target, const char *options) {
-    int result = -1;
+    printf("Executing scanner: %s on target: %s with options: %s\n", 
+           scanner_type, target, options ? options : "none");
     
-    if (strcmp(scanner_type, "nmap") == 0) {
-        result = execute_nmap(target, options);
-    } else if (strcmp(scanner_type, "zap") == 0 || strcmp(scanner_type, "owasp_zap") == 0) {
-        result = execute_owasp_zap(target, options);
-    } else if (strcmp(scanner_type, "nikto") == 0) {
-        result = execute_nikto(target, options);
+    if (strcasecmp(scanner_type, "nmap") == 0) {
+        return execute_nmap(target, options);
+    } else if (strcasecmp(scanner_type, "zap") == 0) {
+        return execute_owasp_zap(target, options);
+    } else if (strcasecmp(scanner_type, "nikto") == 0) {
+        return execute_nikto(target, options);
     } else {
-        fprintf(stderr, "Unknown scanner type: %s\n", scanner_type);
+        printf("Unknown scanner type: '%s'\n", scanner_type);
         return -1;
     }
-    
-    if (result != 0) {
-        fprintf(stderr, "Error executing %s scanner\n", scanner_type);
-        return result;
-    }
-    
-    printf("Successfully executed %s scan on %s\n", scanner_type, target);
-    return 0;
 }

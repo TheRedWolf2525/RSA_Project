@@ -45,7 +45,7 @@ void orchestrator_run()
         {
             if (is_agent_connected(i))
             {
-                if (receive_results(i, buffer, sizeof(buffer)) == 0)
+                if (receive_results(i, buffer) == 0)
                 {
                     Message *msg = (Message *)buffer;
                     if (msg->type == MSG_TYPE_RESULT)
@@ -62,7 +62,7 @@ void orchestrator_run()
     if (agent_count > 0 && !command_sent)
     {
         printf("Sending scan command to agent...\n");
-        send_command(0, "SCAN nmap localhost -p 80-100");
+        send_command(0, "SCAN nmap localhost -p80");
         command_sent = 1;
     }
 }

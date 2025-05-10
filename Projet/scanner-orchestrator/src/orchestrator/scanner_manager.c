@@ -13,7 +13,7 @@ typedef struct {
 
 static Scanner scanners[MAX_SCANNERS] = {
     {"nmap", "nmap"},
-    {"zap", "zap"},
+    {"zap", "zap-cli"},
     {"nikto", "nikto"}
 };
 

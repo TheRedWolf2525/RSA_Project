@@ -23,7 +23,24 @@ int execute_nmap(const char *target, const char *options) {
 int execute_owasp_zap(const char *target, const char *options) {
     char command[BUFFER_SIZE];
     
-    if (options && strlen(options) > 0) {
+    printf("Tentative d'exécution de ZAP via zap.sh...\n");
+    if (options && strstr(options, "-cmd -quickurl") != NULL) {
+        snprintf(command, sizeof(command), "/home/nathan/zaproxy/ZAP_2.16.1/zap.sh -cmd -quickurl http://%s %s > %s 2>&1", 
+                target, options ? options + 15 : "", OUTPUT_FILE);
+    } else {
+        snprintf(command, sizeof(command), "/home/nathan/zaproxy/ZAP_2.16.1/zap.sh -cmd -quickurl http://%s %s > %s 2>&1", 
+                target, options ? options : "", OUTPUT_FILE);
+    }
+    
+    printf("Executing: %s\n", command);
+    int ret = system(command);
+    
+    if (ret == 0) {
+        return ret;
+    }
+    
+    printf("zap.sh a échoué, tentative avec zap-cli...\n");
+    if (options && strlen(options) > 0 && strstr(options, "-cmd -quickurl") == NULL) {
         snprintf(command, sizeof(command), "zap-cli quick-scan %s --url http://%s > %s 2>&1", 
                 options, target, OUTPUT_FILE);
     } else {
@@ -32,10 +49,10 @@ int execute_owasp_zap(const char *target, const char *options) {
     }
     
     printf("Executing: %s\n", command);
-    int ret = system(command);
+    ret = system(command);
     
     if (ret != 0) {
-        printf("First ZAP command failed, trying alternative method...\n");
+        printf("zap-cli a échoué, tentative via Docker...\n");
         snprintf(command, sizeof(command), "docker run -i owasp/zap2docker-stable zap-baseline.py -t http://%s > %s 2>&1", 
                 target, OUTPUT_FILE);
         printf("Executing alternative: %s\n", command);
@@ -86,12 +103,28 @@ int execute_scanner(const char *scanner_type, const char *target, const char *op
     } else if (strcasecmp(scanner_type, "zap") == 0) {
     int success = 0;
     
+    // Première tentative: utiliser zap.sh directement
+    printf("Tentative d'exécution de ZAP via zap.sh...\n");
+    if (options && strstr(options, "-cmd -quickurl") != NULL) {
+        snprintf(command, sizeof(command), "/home/nathan/zaproxy/ZAP_2.16.1/zap.sh %s http://%s > %s 2>&1", 
+                options, target, output_file);
+    } else {
+        snprintf(command, sizeof(command), "/home/nathan/zaproxy/ZAP_2.16.1/zap.sh -cmd -quickurl http://%s %s > %s 2>&1", 
+                target, options ? options : "", output_file);
+    }
+    
+    printf("Executing: %s\n", command);
+    if (system(command) == 0) {
+        success = 1;
+        printf("ZAP scan via zap.sh completed successfully\n");
+    }
+    
     if (!success) {
         snprintf(command, sizeof(command), "which zap-cli > /dev/null 2>&1");
         if (system(command) == 0) {
             printf("Using zap-cli for scanning\n");
             
-            if (options) {
+            if (options && strstr(options, "-cmd -quickurl") == NULL) {
                 snprintf(command, sizeof(command), "zap-cli quick-scan %s -t http://%s > %s 2>&1", 
                         options, target, output_file);
             } else {
@@ -118,9 +151,12 @@ int execute_scanner(const char *scanner_type, const char *target, const char *op
             if (output) {
                 fprintf(output, "ZAP Security Scanner\n");
                 fprintf(output, "Target: http://%s\n\n", target);
-                fprintf(output, "Error: Unable to run OWASP ZAP scanner.\n");
-                fprintf(output, "Please ensure OWASP ZAP is installed or Docker is configured correctly.\n");
-                fprintf(output, "You can install ZAP from: https://www.zaproxy.org/download/\n");
+                fprintf(output, "Error: Unable to run OWASP ZAP scanner with any available method.\n");
+                fprintf(output, "Tried:\n");
+                fprintf(output, "1. zap.sh\n");
+                fprintf(output, "2. zap-cli\n");
+                fprintf(output, "3. Docker container\n");
+                fprintf(output, "Please ensure ZAP is installed correctly or specify the correct path to zap.sh.\n");
                 fclose(output);
                 success = 1;
             }
